@@ -2,14 +2,14 @@
 
 waypoint-integration-service owns GitHub and GitLab. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@waypoint/nest-messaging`, internal REST for the API gateway. Local port 3018.
 
-| | |
-| --- | --- |
-| Data | GitHub App installations and GitLab group tokens, repositories mapped to spaces, Git accounts mapped to members, task Git links, Git automations per space, detection settings, webhook delivery log. |
-| API | Connections, repositories, accounts, a task's links (link, unlink, create a branch), Git automations, redeliver a webhook, test event. |
-| Emits | `git.branch-created`, `git.pr-opened`, `git.pr-merged`, `git.pr-closed`, `git.checks-completed` |
-| Listens to | `task.purged (removes links)` |
-| External | GitHub and GitLab APIs; their webhooks arrive through the API gateway's public routes. |
-| Phase | Right after the first version |
+|            |                                                                                                                                                                                                       |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Data       | GitHub App installations and GitLab group tokens, repositories mapped to spaces, Git accounts mapped to members, task Git links, Git automations per space, detection settings, webhook delivery log. |
+| API        | Connections, repositories, accounts, a task's links (link, unlink, create a branch), Git automations, redeliver a webhook, test event.                                                                |
+| Emits      | `git.branch-created`, `git.pr-opened`, `git.pr-merged`, `git.pr-closed`, `git.checks-completed`                                                                                                       |
+| Listens to | `task.purged (removes links)`                                                                                                                                                                         |
+| External   | GitHub and GitLab APIs; their webhooks arrive through the API gateway's public routes.                                                                                                                |
+| Phase      | Right after the first version                                                                                                                                                                         |
 
 Arrives right after the first version.
 
