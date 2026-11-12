@@ -1,6 +1,6 @@
 {
   "name": "cadenway-integration-service",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Cadenway integration service: GitHub and GitLab.",
   "private": true,
   "license": "UNLICENSED",
