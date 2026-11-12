@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "waypoint-integration-service",
+      "name": "cadenway-integration-service",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": [
         "start:dev"

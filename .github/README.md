@@ -1,15 +1,15 @@
-# waypoint-integration-service
+# cadenway-integration-service
 
-waypoint-integration-service owns GitHub and GitLab. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@waypoint/nest-messaging`, internal REST for the API gateway. Local port 3018.
+cadenway-integration-service owns GitHub and GitLab. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@cadenway/nest-messaging`, internal REST for the API gateway. Local port 3018.
 
-| | |
-| --- | --- |
-| Data | GitHub App installations and GitLab group tokens, repositories mapped to spaces, Git accounts mapped to members, task Git links, Git automations per space, detection settings, webhook delivery log. |
-| API | Connections, repositories, accounts, a task's links (link, unlink, create a branch), Git automations, redeliver a webhook, test event. |
-| Emits | `git.branch-created`, `git.pr-opened`, `git.pr-merged`, `git.pr-closed`, `git.checks-completed` |
-| Listens to | `task.purged (removes links)` |
-| External | GitHub and GitLab APIs; their webhooks arrive through the API gateway's public routes. |
-| Phase | Right after the first version |
+|            |                                                                                                                                                                                                       |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Data       | GitHub App installations and GitLab group tokens, repositories mapped to spaces, Git accounts mapped to members, task Git links, Git automations per space, detection settings, webhook delivery log. |
+| API        | Connections, repositories, accounts, a task's links (link, unlink, create a branch), Git automations, redeliver a webhook, test event.                                                                |
+| Emits      | `git.branch-created`, `git.pr-opened`, `git.pr-merged`, `git.pr-closed`, `git.checks-completed`                                                                                                       |
+| Listens to | `task.purged (removes links)`                                                                                                                                                                         |
+| External   | GitHub and GitLab APIs; their webhooks arrive through the API gateway's public routes.                                                                                                                |
+| Phase      | Right after the first version                                                                                                                                                                         |
 
 Arrives right after the first version.
 
@@ -17,12 +17,12 @@ Arrives right after the first version.
 
 Requirements: Node.js LTS and pnpm (versions in `package.json`), and Docker.
 
-1. Clone this repository next to the other Waypoint repositories, flat, in one folder.
-2. To run it with the rest of Waypoint, start the stack from `waypoint-ops`; it builds the sibling
+1. Clone this repository next to the other Cadenway repositories, flat, in one folder.
+2. To run it with the rest of Cadenway, start the stack from `cadenway-ops`; it builds the sibling
    folders, this one included (`core` profile; `full` adds every other service):
 
    ```bash
-   cd ../waypoint-ops/compose
+   cd ../cadenway-ops/compose
    docker compose -f compose.yaml -f compose.local.yaml --profile core up -d
    ```
 
@@ -41,7 +41,7 @@ Run the narrowest check first; CI runs them all on every pull request.
 pnpm format:check
 pnpm lint
 pnpm typecheck
-pnpm test -- src/modules/<module>      # targeted
+pnpm test src/modules/<module>      # targeted
 pnpm test:integration                    # PostgreSQL and NATS in Docker
 pnpm test:coverage
 pnpm build
