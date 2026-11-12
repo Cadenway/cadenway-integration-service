@@ -4,7 +4,7 @@
 
 **Status:** This page records the target design from repository instructions and skills. Its behavior has not been verified as implemented in this snapshot.
 
-The tables and rules on this page are **target domain behavior**, not proof of a running service or an approved API. Source: `wp-integration-domain` ([Claude](../.claude/skills/wp-integration-domain/SKILL.md), [Codex](../.codex/skills/wp-integration-domain/SKILL.md)). The linked mockup and guides remain the source for product details; confirm ambiguous values before implementation.
+The tables and rules on this page are **target domain behavior**, not proof of a running service or an approved API. Source: `cw-integration-domain` ([Claude](../.claude/skills/cw-integration-domain/SKILL.md), [Codex](../.codex/skills/cw-integration-domain/SKILL.md)). The linked mockup and guides remain the source for product details; confirm ambiguous values before implementation.
 
 ## What this service owns
 
@@ -24,7 +24,7 @@ GitHub and GitLab.
 
 ## Rules this service guards
 
-- A branch, commit or PR citing a task id (WAY-482) is linked; `fixes`, `closes`, `resolves` close the task on merge.
+- A branch, commit or PR citing a task id (CAD-482) is linked; `fixes`, `closes`, `resolves` close the task on merge.
 - Default Git automations: branch created → progress, PR opened → review, PR merged → done; each can be "do nothing".
 - A Git automation never moves a task backwards and never touches milestones; it calls task-service with the source `git`.
 - Webhook signatures are verified before anything else.
@@ -38,7 +38,7 @@ Everything above comes from the [repositories document](https://claude.ai/artifa
 
 ## Contract and delivery sequence
 
-The `waypoint-api-contracts` repository owns HTTP and event specifications. Consumers use published `@waypoint/contracts` packages and `@waypoint/nest-messaging`; do not redefine payloads or connect to another service's database. Change contracts first, then the producing service, followed by gateways and listeners, and finally the webapp. Planned event names on this page must be checked against the actual published specification before use.
+The `cadenway-api-contracts` repository owns HTTP and event specifications. Consumers use published `@cadenway/contracts` packages and `@cadenway/nest-messaging`; do not redefine payloads or connect to another service's database. Change contracts first, then the producing service, followed by gateways and listeners, and finally the webapp. Planned event names on this page must be checked against the actual published specification before use.
 
 ## References
 

@@ -1,6 +1,6 @@
-# waypoint-integration-service documentation
+# cadenway-integration-service documentation
 
-Planned role: waypoint-integration-service owns GitHub and GitLab. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@waypoint/nest-messaging`, internal REST for the API gateway. Local port 3018.
+Planned role: cadenway-integration-service owns GitHub and GitLab. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@cadenway/nest-messaging`, internal REST for the API gateway. Local port 3018.
 
 ## Current status
 
