@@ -16,6 +16,11 @@
       "minimumReleaseAge": null
     },
     {
+      "description": "The Octokit packages share their types and move as one update.",
+      "matchPackageNames": ["@octokit/**"],
+      "groupName": "octokit"
+    },
+    {
       "description": "TypeScript stays on 6.0 until the Nest CLI and typescript-eslint accept a newer line.",
       "matchPackageNames": ["typescript"],
       "allowedVersions": "<6.1.0"
