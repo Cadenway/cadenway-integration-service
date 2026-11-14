@@ -33,6 +33,8 @@ GitHub and GitLab.
 
 Arrives right after the first version.
 
+Decided: outgoing webhooks (the `webhooks:manage` scope and the `webhooks` quota) belong to this service and are delivered as durable jobs. It calls cadenway-task-service directly, with its own internal token and the actor type `git`.
+
 Everything above comes from the [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N) and the
 [integration guide](https://claude.ai/artifact/CpJHVCiFfF9j3KbHQ2S1Et). If the mockup disagrees with this guide, update the guide and its source skill for both assistants.
 
