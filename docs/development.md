@@ -81,19 +81,19 @@ value. `.env.example` holds a working local value for each;
 [cadenway-ops](https://github.com/Cadenway/cadenway-ops) (`docs/service-environment.md`) says where
 each value comes from on a server.
 
-| Variable                                              | Read by               | Value                                                                                      |
-| ----------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------ |
-| `PORT`                                                | The service           | `3018`                                                                                     |
-| `NODE_ENV`, `LOG_LEVEL`, `LOG_PRETTY`                 | The service           | `production`, `info` and `false` when unset                                                |
-| `DATABASE_URL`                                        | The service           | Application role `integration_app`                                                         |
-| `MIGRATION_DATABASE_URL`                              | `src/migrate.ts` only | Migrator role `integration_migrator`; required once a migration exists                     |
-| `INTERNAL_TOKEN_AUDIENCE`                             | The service           | `integration-service`                                                                      |
-| `INTERNAL_TOKEN_TRUSTED_ISSUERS`                      | The service           | One line of JSON: the public keys of each backend allowed to call it                       |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`                         | `src/telemetry.ts`    | OTLP over HTTP; unset, nothing leaves the process                                          |
-| `NATS_URL`                                            | The service           | `nats://` URL of the broker                                                                |
-| `NATS_USER`, `NATS_PASSWORD`                          | The service           | User `integration` and its password; inbox prefix `_INBOX.integration`                     |
-| `INTERNAL_TOKEN_ISSUER`, `INTERNAL_TOKEN_PRIVATE_JWK` | Nothing yet           | `integration-service` and its private key, to sign its calls once the first one is written |
-| `TASK_SERVICE_URL`                                    | Nothing yet           | The service it calls; `http://localhost:3013` locally                                      |
+| Variable                                              | Read by               | Value                                                                                                                                                            |
+| ----------------------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`                                                | The service           | `3018`                                                                                                                                                           |
+| `NODE_ENV`, `LOG_LEVEL`, `LOG_PRETTY`                 | The service           | `production`, `info` and `false` when unset                                                                                                                      |
+| `DATABASE_URL`                                        | The service           | Application role `integration_app`                                                                                                                               |
+| `MIGRATION_DATABASE_URL`                              | `src/migrate.ts` only | Migrator role `integration_migrator`; required once a migration exists. The GitOps agent passes it to the migration container only, never to the running service |
+| `INTERNAL_TOKEN_AUDIENCE`                             | The service           | `integration-service`                                                                                                                                            |
+| `INTERNAL_TOKEN_TRUSTED_ISSUERS`                      | The service           | One line of JSON: the public keys of each backend allowed to call it                                                                                             |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`                         | `src/telemetry.ts`    | OTLP over HTTP; unset, nothing leaves the process                                                                                                                |
+| `NATS_URL`                                            | The service           | `nats://` URL of the broker                                                                                                                                      |
+| `NATS_USER`, `NATS_PASSWORD`                          | The service           | User `integration` and its password; inbox prefix `_INBOX.integration`                                                                                           |
+| `INTERNAL_TOKEN_ISSUER`, `INTERNAL_TOKEN_PRIVATE_JWK` | Nothing yet           | `integration-service` and its private key, to sign its calls once the first one is written                                                                       |
+| `TASK_SERVICE_URL`                                    | Nothing yet           | The service it calls; `http://localhost:3013` locally                                                                                                            |
 
 The signing variables join `src/config/app-config.ts` with the first call, as
 `internalTokenSignerConfigShape` of the kit: `.env.example` cannot carry a private key, and a fresh
