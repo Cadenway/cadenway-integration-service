@@ -4,7 +4,7 @@ Planned role: cadenway-integration-service owns GitHub and GitLab. NestJS, its o
 
 ## Current status
 
-The NestJS application under `src/` runs on `@cadenway/nest-common`: configuration validated at start-up, JSON logs, OpenTelemetry preloaded, the internal token required on every route but the health probes, and a readiness route that checks its PostgreSQL database. NATS is not connected yet: `@cadenway/nest-messaging` is not published. It calls no other service yet: the variables of its calls to task-service are declared and read by nothing. No business code, route, event or migration exists yet; the target architecture in this guide is what they must follow.
+The NestJS application under `src/` runs on `@cadenway/nest-common` and `@cadenway/nest-messaging`: configuration validated at start-up, JSON logs, OpenTelemetry preloaded, the internal token required on every route but the health probes, the NATS connection of the `integration` user with the outbox relay, and a readiness route that checks PostgreSQL and NATS. The only migration creates the tables of the service kit (outbox, processed ids, versions, `Idempotency-Key`), owned by the platform module. It calls no other service yet: the variables of its calls to task-service are declared and read by nothing. No business code, route or event exists yet; the target architecture in this guide is what they must follow.
 
 ## Read the guides
 
