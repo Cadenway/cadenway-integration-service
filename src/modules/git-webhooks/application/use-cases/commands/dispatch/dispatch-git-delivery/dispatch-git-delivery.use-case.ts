@@ -30,6 +30,8 @@ export class DispatchGitDelivery {
       pr_open: 'review',
       pr_merged: claim.fact.closingTaskKeys.includes(input.taskKey) ? 'done' : null,
       pr_closed: null,
+      pr_head: null,
+      pr_checks: null,
     } as const;
     const result = await this.task.apply(claim, status[claim.fact.trigger]);
     if (result.disposition !== 'unavailable' && result.spaceId !== claim.mapping.spaceId) {

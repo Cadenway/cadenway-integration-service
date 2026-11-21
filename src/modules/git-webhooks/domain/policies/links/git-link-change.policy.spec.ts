@@ -19,6 +19,19 @@ const branch = { ...target, trigger: 'branch', branch: 'feature/CAD-482' } as co
 const opened = { ...target, trigger: 'pr_open', requestNumber: 214 } as const;
 const merged = { ...target, trigger: 'pr_merged', requestNumber: 214 } as const;
 const closed = { ...target, trigger: 'pr_closed', requestNumber: 214 } as const;
+const head = { sha: 'b'.repeat(40), observedAtMs: Date.UTC(2026, 10, 8, 20, 18, 44) };
+const headUpdate = { ...target, trigger: 'pr_head', requestNumber: 214, head } as const;
+const completedChecks = {
+  ...target,
+  trigger: 'pr_checks',
+  requestNumber: 214,
+  checks: {
+    requestNumber: 214,
+    headSha: head.sha,
+    attemptId: 315,
+    completedAtMs: head.observedAtMs + 60_000,
+  },
+} as const;
 
 describe('Git link decisions', () => {
   it('retains the exact case of a branch reference and distinguishes branch and request identities', () => {
@@ -128,6 +141,25 @@ describe('Git link decisions', () => {
     });
     if (closure === null) throw new Error('Expected an initial pull request close fact.');
     expect(decideGitLinkChange(identity, closure.state, opened)).toBeNull();
+  });
+
+  it.each([headUpdate, completedChecks])(
+    'keeps $trigger out of the lifecycle transition',
+    (fact) => {
+      const identity = gitLinkIdentity(scope, opened);
+      const initial = decideGitLinkChange(identity, null, opened);
+      if (initial === null) throw new Error('Expected an initial pull request fact.');
+
+      expect(gitLinkIdentity(scope, fact)).toEqual(identity);
+      expect(decideGitLinkChange(identity, null, fact)).toBeNull();
+      expect(decideGitLinkChange(identity, initial.state, fact)).toBeNull();
+    },
+  );
+
+  it('refuses to attach check evidence to a different request number', () => {
+    expect(() => gitLinkIdentity(scope, { ...completedChecks, requestNumber: 215 })).toThrow(
+      InvalidGitLinkError,
+    );
   });
 
   it('refuses an unrelated existing link or a delivery for a different provider object', () => {

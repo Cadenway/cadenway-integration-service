@@ -26,14 +26,21 @@ export function gitLinkIdentity(scope: LinkScope, reference: LinkReference): Git
   }
 
   const { requestNumber } = reference;
-  if (!Number.isSafeInteger(requestNumber) || requestNumber < 1) throw new InvalidGitLinkError();
+  if (
+    !Number.isSafeInteger(requestNumber) ||
+    requestNumber < 1 ||
+    (reference.trigger === 'pr_checks' && reference.checks.requestNumber !== requestNumber)
+  ) {
+    throw new InvalidGitLinkError();
+  }
   return { organizationId, receiverId, binding, taskId, kind: 'pull-request', requestNumber };
 }
 
 /**
  * Applies the Integration AsyncAPI link ordering rule. A verified merge supersedes a close
  * without merge. Replays and deliveries that would reverse either closure produce no fact
- * or version change. The caller commits state and fact together.
+ * or version change. Head and check observations leave the lifecycle untouched and are
+ * settled against the current link by the caller.
  */
 export function decideGitLinkChange(
   identity: GitLinkIdentity,
@@ -41,6 +48,8 @@ export function decideGitLinkChange(
   reference: LinkReference,
 ): { readonly state: GitLinkState; readonly event: GitLinkChanged } | null {
   if (!isSameLink(identity, gitLinkIdentity(identity, reference))) throw new InvalidGitLinkError();
+  if (reference.trigger === 'pr_head' || reference.trigger === 'pr_checks') return null;
+
   const { status, type } = outcomes[reference.trigger];
   if (current !== null) {
     if (

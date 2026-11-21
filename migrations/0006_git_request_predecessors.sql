@@ -1,0 +1,1 @@
+CREATE INDEX "git_webhook_deliveries_request_predecessors_index" ON "git_webhook_deliveries" USING btree ("organization_id","receiver_id","provider",("work" -> 'fact' ->> 'requestNumber'),"created_at","id");

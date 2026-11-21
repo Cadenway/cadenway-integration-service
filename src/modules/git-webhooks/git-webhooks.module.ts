@@ -6,7 +6,11 @@ import { OutboxWriter } from '@cadenway/nest-messaging/outbox/writer';
 import { Module } from '@nestjs/common';
 
 import type { AppConfig } from '../../config/app-config.js';
-import { GIT_DISPATCH_QUEUE, GIT_PURGE_QUEUE } from '../../config/job-queues.js';
+import {
+  GIT_DISPATCH_QUEUE,
+  GIT_LINK_DISPATCH_QUEUE,
+  GIT_PURGE_QUEUE,
+} from '../../config/job-queues.js';
 import type { GitTaskAction } from './application/ports/outbound/actions/dispatch/git-task-action.port.js';
 import { AdmitGitWebhook } from './application/use-cases/commands/deliveries/admit-git-webhook/admit-git-webhook.use-case.js';
 import { DispatchGitDelivery } from './application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
@@ -27,6 +31,8 @@ import { GitWebhooksController } from './presentation/http/controllers/deliverie
 import { GitDispatchJobHandler } from './presentation/jobs/handlers/dispatch/git-dispatch.handler.js';
 import { GitPurgeJobHandler } from './presentation/jobs/handlers/purge/git-purge.handler.js';
 import { TaskPurgedHandler } from './presentation/messaging/handlers/purge/task-purged.handler.js';
+
+const linkDispatchWorker = Symbol('GitLinkDispatchWorker');
 
 async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
   const privateJwk = config.INTERNAL_TOKEN_PRIVATE_JWK;
@@ -64,7 +70,12 @@ async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
         jobs: GitDispatchJobsProducer,
       ) =>
         new AdmitGitWebhook(
-          new DrizzleGitAdmissionUnitOfWork(runner, config.GIT_WEBHOOK_RECEIVERS, jobs),
+          new DrizzleGitAdmissionUnitOfWork(
+            runner,
+            config.GIT_WEBHOOK_RECEIVERS,
+            jobs,
+            config.GIT_LINK_EVENTS_ENABLED ? new DrizzleGitLinkRepository() : undefined,
+          ),
           {
             verify: (delivery, secret) =>
               delivery.provider === 'github'
@@ -92,29 +103,27 @@ async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
         const outbox = new GitLinkChangedOutbox(outboxWriter);
         const work = new DrizzleGitDispatchUnitOfWork(
           runner,
-          config.GIT_LINK_EVENTS_ENABLED
-            ? async (scope, claim, receiverId, placement) => {
-                const identity = gitLinkIdentity(
-                  {
-                    organizationId: claim.organizationId,
-                    receiverId,
-                    binding: claim.mapping.binding,
-                    taskId: placement.taskId,
-                  },
-                  claim.fact,
-                );
-                const link = await links.record(scope, identity, claim.fact, claim.taskKey);
-                if (link === null) return;
-                await outbox.append(scope, {
-                  organizationId: claim.organizationId,
-                  integrationId: claim.mapping.integrationId,
-                  taskKey: claim.taskKey,
-                  gitLinkId: link.id,
-                  event: link.event,
-                  placement,
-                });
-              }
-            : undefined,
+          async (scope, claim, receiverId, placement) => {
+            const identity = gitLinkIdentity(
+              {
+                organizationId: claim.organizationId,
+                receiverId,
+                binding: claim.mapping.binding,
+                taskId: placement.taskId,
+              },
+              claim.fact,
+            );
+            const link = await links.record(scope, identity, claim.fact, claim.taskKey);
+            if (link === null) return;
+            await outbox.append(scope, {
+              organizationId: claim.organizationId,
+              integrationId: claim.mapping.integrationId,
+              taskKey: claim.taskKey,
+              gitLinkId: link.id,
+              event: link.event,
+              placement,
+            });
+          },
         );
         return new DispatchGitDelivery(work, await createTaskAction(config));
       },
@@ -124,6 +133,12 @@ async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
       inject: [JobWorkerRegistry, DispatchGitDelivery],
       useFactory: (workers: JobWorkerRegistry, dispatch: DispatchGitDelivery) =>
         new GitDispatchJobHandler(workers, dispatch, GIT_DISPATCH_QUEUE.name),
+    },
+    {
+      provide: linkDispatchWorker,
+      inject: [JobWorkerRegistry, DispatchGitDelivery],
+      useFactory: (workers: JobWorkerRegistry, dispatch: DispatchGitDelivery) =>
+        new GitDispatchJobHandler(workers, dispatch, GIT_LINK_DISPATCH_QUEUE.name),
     },
     {
       provide: PurgeTaskGitLinks,

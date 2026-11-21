@@ -1,6 +1,10 @@
+import { readVerifiedGitChecks } from '../../../../../domain/policies/deliveries/read-verified-git-checks.policy.js';
 import { readVerifiedGitDelivery } from '../../../../../domain/policies/deliveries/read-verified-git-delivery.policy.js';
+import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/deliveries/verified-git-delivery.value-object.js';
+import type { GitDeliveryMapping } from '../../../../models/deliveries/git-delivery-mapping.model.js';
 import type { GitRepositoryIdentity } from '../../../../models/deliveries/git-repository-identity.model.js';
 import type { GitWebhookVerifier } from '../../../../ports/outbound/security/deliveries/git-webhook-verifier.port.js';
+import type { GitDeliveryTransaction } from '../../../../ports/outbound/transactions/deliveries/git-delivery-transaction.port.js';
 import type { GitDeliveryUnitOfWork } from '../../../../ports/outbound/transactions/deliveries/git-delivery-unit-of-work.port.js';
 import type { AdmitGitWebhookInput } from './admit-git-webhook.input.js';
 import type { AdmitGitWebhookOutput } from './admit-git-webhook.output.js';
@@ -47,23 +51,18 @@ export class AdmitGitWebhook {
       if (mapping === null) {
         return supportedEvent(verifiedInput) ? 'authentication-failed' : 'ignored';
       }
-      const fact = readVerifiedGitDelivery(mapping.binding, body);
+      const fact = readFact(mapping, body);
       if (fact.kind === 'repository_mismatch') {
         return supportedEvent(verifiedInput) ? 'authentication-failed' : 'ignored';
       }
-      const eventMatches =
-        fact.kind === 'actionable' &&
-        ((input.provider === 'github' &&
-          ((input.event === 'create' && fact.trigger === 'branch') ||
-            (input.event === 'pull_request' && fact.trigger !== 'branch'))) ||
-          (input.provider === 'gitlab' &&
-            ((input.event === 'Push Hook' && fact.trigger === 'branch') ||
-              (input.event === 'Merge Request Hook' && fact.trigger !== 'branch'))));
-      if (fact.kind === 'actionable' && !eventMatches) return 'invalid-delivery';
+      if (fact.kind === 'actionable' && !matchesEvent(verifiedInput, fact.trigger)) {
+        return 'invalid-delivery';
+      }
+      const work = fact.kind === 'actionable' ? await selectWork(transaction, mapping, fact) : null;
       return transaction.admit({
         deliveryId,
         digest,
-        work: eventMatches ? { mapping, fact } : null,
+        work,
       });
     });
     if (!result.active || result.result === 'authentication-failed') {
@@ -76,10 +75,70 @@ export class AdmitGitWebhook {
   // #endregion
 }
 
+type Actionable = Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
+
+function readFact(mapping: GitDeliveryMapping, body: unknown): VerifiedGitDelivery {
+  const fact = readVerifiedGitDelivery(mapping.binding, body);
+  if (fact.kind !== 'ignored') return fact;
+  const checks = readVerifiedGitChecks(mapping.binding, body);
+  return checks === null
+    ? fact
+    : {
+        kind: 'actionable',
+        trigger: 'pr_checks',
+        requestNumber: checks.requestNumber,
+        checks,
+        taskKeys: [],
+        closingTaskKeys: [],
+      };
+}
+
+async function selectWork(
+  transaction: GitDeliveryTransaction,
+  mapping: GitDeliveryMapping,
+  fact: Actionable,
+): Promise<Parameters<GitDeliveryTransaction['admit']>[0]['work']> {
+  if (fact.trigger !== 'pr_closed' && fact.trigger !== 'pr_head' && fact.trigger !== 'pr_checks') {
+    return { mapping, fact };
+  }
+  const taskKeys = await transaction.findRequestTaskKeys(
+    mapping.binding,
+    fact.requestNumber,
+    fact.trigger === 'pr_checks' ? fact.checks.headSha : undefined,
+  );
+  if (taskKeys === null) return null;
+  const predecessors = await transaction.findPendingRequestWork(
+    mapping.binding,
+    fact.requestNumber,
+    fact.trigger === 'pr_checks' ? ['pr_open', 'pr_merged', 'pr_head'] : ['pr_open', 'pr_merged'],
+  );
+  if (predecessors === null) return null;
+  const targets = new Set(taskKeys);
+  for (const predecessor of predecessors) {
+    for (const taskKey of predecessor.taskKeys) targets.add(taskKey);
+  }
+  if (targets.size === 0 || targets.size > 20) return null;
+  return {
+    mapping,
+    fact: { ...fact, taskKeys: [...targets] },
+    ...(predecessors.length === 0 ? {} : { prerequisiteIds: predecessors.map(({ id }) => id) }),
+  };
+}
+
+const eventNames = {
+  github: { branch: 'create', request: 'pull_request', checks: 'check_suite' },
+  gitlab: { branch: 'Push Hook', request: 'Merge Request Hook', checks: 'Pipeline Hook' },
+} as const;
+
+function matchesEvent(input: AdmitGitWebhookInput, trigger: Actionable['trigger']): boolean {
+  const events = eventNames[input.provider];
+  if (trigger === 'branch') return input.event === events.branch;
+  if (trigger === 'pr_checks') return input.event === events.checks;
+  return input.event === events.request;
+}
+
 function supportedEvent(input: AdmitGitWebhookInput): boolean {
-  return input.provider === 'github'
-    ? input.event === 'create' || input.event === 'pull_request'
-    : input.event === 'Push Hook' || input.event === 'Merge Request Hook';
+  return Object.values<string>(eventNames[input.provider]).includes(input.event);
 }
 
 function repositoryIdentity(

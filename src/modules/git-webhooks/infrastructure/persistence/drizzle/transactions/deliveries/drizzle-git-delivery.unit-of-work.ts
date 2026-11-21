@@ -5,6 +5,8 @@ import type { GitDeliveryMapping } from '../../../../../application/models/deliv
 import type { GitRepositoryIdentity } from '../../../../../application/models/deliveries/git-repository-identity.model.js';
 import type { GitDeliveryTransaction } from '../../../../../application/ports/outbound/transactions/deliveries/git-delivery-transaction.port.js';
 import type { GitDispatchJobsProducer } from '../../../../jobs/pg-boss/dispatch/git-dispatch.adapter.js';
+import { DrizzleGitRequestPredecessorsRepository } from '../../repositories/deliveries/drizzle-git-request-predecessors.repository.js';
+import type { DrizzleGitLinkRepository } from '../../repositories/links/drizzle-git-link.repository.js';
 import { gitRepositoryMappings } from '../../schemas/deliveries/git-repository-mappings.schema.js';
 import {
   gitWebhookDeliveries,
@@ -25,6 +27,7 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     private readonly provider: 'github' | 'gitlab',
     private readonly receiverRevision: number | null = null,
     private readonly jobs?: Pick<GitDispatchJobsProducer, 'enqueue'>,
+    private readonly links?: Pick<DrizzleGitLinkRepository, 'findRequestTaskKeys'>,
   ) {}
   // #endregion
 
@@ -56,6 +59,36 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
       spaceId: mapping.spaceId,
       mappingAuthorUserId: mapping.mappingAuthorUserId,
     };
+  }
+
+  /** Resolves existing links from the current mapping; disabled link producers admit no targets. */
+  public async findRequestTaskKeys(
+    binding: GitRepositoryIdentity,
+    requestNumber: number,
+    headSha?: string,
+  ): ReturnType<GitDeliveryTransaction['findRequestTaskKeys']> {
+    if (this.links === undefined || binding.provider !== this.provider) return [];
+    return await this.links.findRequestTaskKeys(
+      this.scope,
+      { organizationId: this.organizationId, receiverId: this.receiverId, binding, requestNumber },
+      headSha,
+    );
+  }
+
+  /** Finds accepted dependent work under the same receiver and mapping as the new observation. */
+  public async findPendingRequestWork(
+    binding: Parameters<GitDeliveryTransaction['findPendingRequestWork']>[0],
+    requestNumber: number,
+    triggers: Parameters<GitDeliveryTransaction['findPendingRequestWork']>[2],
+  ): ReturnType<GitDeliveryTransaction['findPendingRequestWork']> {
+    if (this.links === undefined || binding.provider !== this.provider) return [];
+    return await new DrizzleGitRequestPredecessorsRepository().findPending(this.scope, {
+      organizationId: this.organizationId,
+      receiverId: this.receiverId,
+      binding,
+      requestNumber,
+      triggers,
+    });
   }
 
   /** Checks an exact ID against its original authenticated digest in the caller's receiver lock. */
@@ -107,6 +140,10 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
             .limit(1)
         : [];
     const existing = duplicate[0];
+    const work: typeof gitWebhookDeliveries.$inferSelect.work =
+      input.work !== null && this.links !== undefined
+        ? { ...input.work, recordLink: true as const }
+        : input.work;
     const rows =
       existing === undefined
         ? await this.scope.db
@@ -117,7 +154,7 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
               provider: this.provider,
               receiverRevision: this.receiverRevision,
               digest: input.digest,
-              work: input.work,
+              work,
             })
             .returning({ id: gitWebhookDeliveries.id })
         : [existing];
@@ -130,9 +167,9 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
       deliveryId: input.deliveryId,
       receiptId: receipt.id,
     });
-    if (existing === undefined && input.work !== null && this.jobs !== undefined) {
-      for (const taskKey of input.work.fact.taskKeys) {
-        await this.jobs.enqueue(this.scope, receipt.id, taskKey);
+    if (existing === undefined && work !== null && this.jobs !== undefined) {
+      for (const taskKey of work.fact.taskKeys) {
+        await this.jobs.enqueue(this.scope, receipt.id, taskKey, work.recordLink === true);
       }
     }
     return existing === undefined ? 'accepted' : 'duplicate';

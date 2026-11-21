@@ -195,6 +195,123 @@ describe('Git link persistence', () => {
     expect(rows.rows).toEqual([]);
   });
 
+  it('correlates checks to the currently authorized request head and rejects stale retries', async () => {
+    const context = {
+      organizationId,
+      actor: { type: 'user' as const, id: actor },
+      role: null,
+      scopes: [],
+    };
+    const shaA = 'a'.repeat(40);
+    const shaB = 'b'.repeat(40);
+    const opened = {
+      ...request,
+      requestNumber: 215,
+      taskKeys: ['CAD-485'],
+      head: { sha: shaA, observedAtMs: 100 },
+    } as const;
+    const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, opened);
+    const lookup = (headSha?: string, overrides = {}) =>
+      runWithOrganizationContext(context, () =>
+        runner.run((scope) =>
+          links.findRequestTaskKeys(
+            scope,
+            { organizationId, receiverId, binding, requestNumber: 215, ...overrides },
+            headSha,
+          ),
+        ),
+      );
+    const record = (fact: Extract<VerifiedGitDelivery, { kind: 'actionable' }>) =>
+      runWithOrganizationContext(context, () =>
+        runner.run((scope) => links.record(scope, identity, fact, 'CAD-485')),
+      );
+    const checks = {
+      kind: 'actionable',
+      trigger: 'pr_checks',
+      requestNumber: 215,
+      taskKeys: ['CAD-485'],
+      closingTaskKeys: [],
+      checks: { requestNumber: 215, headSha: shaA, attemptId: 10, completedAtMs: 120 },
+    } as const satisfies VerifiedGitDelivery;
+
+    expect(await record(opened)).toMatchObject({
+      event: { type: 'pull-request-opened', version: 1 },
+    });
+    expect(await lookup(shaA)).toEqual(['CAD-485']);
+    expect(await lookup(shaB)).toEqual([]);
+    expect(await lookup(undefined, { binding: { ...binding, installationId: 42 } })).toEqual([]);
+    await expect(
+      record({ ...checks, checks: { ...checks.checks, requestNumber: 216 } }),
+    ).rejects.toThrow('verified checks do not match');
+    await expect(
+      runWithOrganizationContext(context, () =>
+        runner.run(async (scope) => {
+          await links.record(scope, identity, checks, 'CAD-485');
+          throw new Error('roll back check and outbox');
+        }),
+      ),
+    ).rejects.toThrow('roll back check and outbox');
+    expect(await record(checks)).toMatchObject({ event: { type: 'checks-completed', version: 2 } });
+    expect(await record(checks)).toBeNull();
+    expect(
+      await record({ ...checks, checks: { ...checks.checks, completedAtMs: 130 } }),
+    ).toMatchObject({
+      event: { type: 'checks-completed', version: 3 },
+    });
+    const head = { ...opened, trigger: 'pr_head' as const };
+    expect(await record({ ...head, head: { sha: shaA, observedAtMs: 300 } })).toBeNull();
+    expect(await record({ ...head, head: { sha: shaB, observedAtMs: 200 } })).toBeNull();
+    expect(await lookup(shaA)).toEqual(['CAD-485']);
+    expect(await record({ ...head, head: { sha: shaB, observedAtMs: 400 } })).toBeNull();
+    expect(await record(checks)).toBeNull();
+    expect(
+      await record({ ...checks, checks: { ...checks.checks, headSha: shaB, completedAtMs: 399 } }),
+    ).toBeNull();
+    expect(
+      await record({ ...checks, checks: { ...checks.checks, headSha: shaB, completedAtMs: 400 } }),
+    ).toMatchObject({ event: { type: 'checks-completed', version: 4 } });
+    await runWithOrganizationContext(context, () =>
+      runner.run((scope) => links.purge(scope, organizationId, 'CAD-485')),
+    );
+    expect(await lookup()).toEqual([]);
+    expect(await record(checks)).toBeNull();
+  });
+
+  it('does not return a truncated request audience over the bounded admission limit', async () => {
+    const context = {
+      organizationId,
+      actor: { type: 'user' as const, id: actor },
+      role: null,
+      scopes: [],
+    };
+    const fact = { ...request, requestNumber: 216, taskKeys: ['CAD-600'] } as const;
+    const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, fact);
+    await runWithOrganizationContext(context, () =>
+      runner.run(async (scope) => {
+        await links.record(scope, identity, fact, 'CAD-600');
+        await scope.client.query(
+          `insert into git_links
+            (organization_id, receiver_id, provider, task_id, task_key, identity_hash, identity, status, version)
+           select $1, $2, 'github', uuidv7(), 'CAD-' || n::text, identity_hash, identity, 'open', 1
+             from git_links cross join generate_series(601, 620) as n
+            where organization_id = $1 and receiver_id = $2 and task_key = 'CAD-600'`,
+          [organizationId, receiverId],
+        );
+      }),
+    );
+    const results = await runWithOrganizationContext(context, () =>
+      runner.run((scope) =>
+        links.findRequestTaskKeys(scope, {
+          organizationId,
+          receiverId,
+          binding,
+          requestNumber: 216,
+        }),
+      ),
+    );
+    expect(results).toBeNull();
+  });
+
   it('limits purge to 500 links while keeping the tombstone through the next pass', async () => {
     const context = {
       organizationId,

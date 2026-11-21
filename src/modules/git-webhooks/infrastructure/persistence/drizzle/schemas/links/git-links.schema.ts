@@ -34,6 +34,11 @@ export const gitLinks = pgTable(
     identity: jsonb('identity').$type<GitLinkIdentity>().notNull(),
     status: text('status').$type<GitLinkState['status']>().notNull(),
     version: bigint('version', { mode: 'number' }).notNull(),
+    headSha: text('head_sha'),
+    headFirstObservedAtMs: bigint('head_first_observed_at_ms', { mode: 'number' }),
+    headLastObservedAtMs: bigint('head_last_observed_at_ms', { mode: 'number' }),
+    checksAttemptId: bigint('checks_attempt_id', { mode: 'number' }),
+    checksCompletedAtMs: bigint('checks_completed_at_ms', { mode: 'number' }),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
   },
@@ -55,10 +60,26 @@ export const gitLinks = pgTable(
     ),
     index('git_links_tenant_task_index').on(table.organizationId, table.taskId, table.id),
     index('git_links_tenant_task_key_index').on(table.organizationId, table.taskKey, table.id),
+    index('git_links_request_lookup_index').on(
+      table.organizationId,
+      table.receiverId,
+      table.identityHash,
+      table.taskKey,
+    ),
     check('git_links_provider_check', sql`${table.provider} in ('github', 'gitlab')`),
     check('git_links_task_key_check', sql`${table.taskKey} ~ '^[A-Z]{2,5}-[1-9][0-9]{0,8}$'`),
     check('git_links_identity_hash_check', sql`${table.identityHash} ~ '^[0-9a-f]{64}$'`),
     check('git_links_identity_check', sql`jsonb_typeof(${table.identity}) = 'object'`),
+    check(
+      'git_links_head_check',
+      sql`(${table.headSha} is null and ${table.headFirstObservedAtMs} is null and ${table.headLastObservedAtMs} is null) or
+          (${table.headSha} is not null and ${table.headFirstObservedAtMs} is not null and ${table.headLastObservedAtMs} is not null and ${table.headSha} ~ '^(?:[0-9a-f]{40}|[0-9a-f]{64})$' and ${table.headFirstObservedAtMs} between 0 and 9007199254740991 and ${table.headLastObservedAtMs} between ${table.headFirstObservedAtMs} and 9007199254740991)`,
+    ),
+    check(
+      'git_links_checks_check',
+      sql`(${table.checksAttemptId} is null and ${table.checksCompletedAtMs} is null) or
+          (${table.headSha} is not null and ${table.checksAttemptId} is not null and ${table.checksCompletedAtMs} is not null and ${table.checksAttemptId} between 1 and 9007199254740991 and ${table.checksCompletedAtMs} between ${table.headFirstObservedAtMs} and 9007199254740991)`,
+    ),
     check(
       'git_links_status_check',
       sql`${table.status} in ('created', 'open', 'merged', 'closed')`,

@@ -6,7 +6,11 @@ export interface GitLinkChanged {
   // #region Properties
   /** Name of the material change and the version assigned to it. */
   readonly type:
-    'branch-created' | 'pull-request-opened' | 'pull-request-closed' | 'pull-request-merged';
+    | 'branch-created'
+    | 'pull-request-opened'
+    | 'pull-request-closed'
+    | 'pull-request-merged'
+    | 'checks-completed';
   readonly version: number;
   // #endregion
 }

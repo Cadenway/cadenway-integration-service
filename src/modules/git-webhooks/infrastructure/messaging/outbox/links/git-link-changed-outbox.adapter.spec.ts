@@ -1,5 +1,6 @@
 import {
   GIT_BRANCH_CREATED_V1,
+  GIT_CHECKS_COMPLETED_V1,
   GIT_PR_CLOSED_V1,
   GIT_PR_MERGED_V1,
   GIT_PR_OPENED_V1,
@@ -43,6 +44,7 @@ describe('GitLinkChangedOutbox', () => {
     ['pull-request-opened', GIT_PR_OPENED_V1, 'state', 1],
     ['pull-request-merged', GIT_PR_MERGED_V1, 'state', 2],
     ['pull-request-closed', GIT_PR_CLOSED_V1, 'state', 2],
+    ['checks-completed', GIT_CHECKS_COMPLETED_V1, 'checks', 3],
   ] as const)(
     'appends the published %s fact with only its authorized placement',
     async (type, name, changed, version) => {

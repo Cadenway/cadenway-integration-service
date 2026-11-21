@@ -1,5 +1,6 @@
 import {
   GIT_BRANCH_CREATED_V1,
+  GIT_CHECKS_COMPLETED_V1,
   GIT_PR_CLOSED_V1,
   GIT_PR_MERGED_V1,
   GIT_PR_OPENED_V1,
@@ -16,7 +17,7 @@ const pullRequestEventName = {
   'pull-request-merged': GIT_PR_MERGED_V1,
   'pull-request-closed': GIT_PR_CLOSED_V1,
 } as const satisfies Record<
-  Exclude<GitLinkChanged['type'], 'branch-created'>,
+  Exclude<GitLinkChanged['type'], 'branch-created' | 'checks-completed'>,
   keyof typeof eventSchemas
 >;
 
@@ -76,6 +77,13 @@ export class GitLinkChangedOutbox {
       await this.writer.append(scope, eventSchemas, GIT_BRANCH_CREATED_V1, {
         ...data,
         changed: ['branch'],
+      });
+      return;
+    }
+    if (change.event.type === 'checks-completed') {
+      await this.writer.append(scope, eventSchemas, GIT_CHECKS_COMPLETED_V1, {
+        ...data,
+        changed: ['checks'],
       });
       return;
     }

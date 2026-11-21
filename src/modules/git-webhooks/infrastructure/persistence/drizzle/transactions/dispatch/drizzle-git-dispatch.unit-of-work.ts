@@ -9,6 +9,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { GitDispatchClaim } from '../../../../../application/models/dispatch/git-dispatch-claim.model.js';
 import type { GitTaskActionResult } from '../../../../../application/models/dispatch/git-task-action-result.model.js';
 import type { GitDispatchUnitOfWork } from '../../../../../application/ports/outbound/transactions/dispatch/git-dispatch-unit-of-work.port.js';
+import { DrizzleGitRequestPredecessorsRepository } from '../../repositories/deliveries/drizzle-git-request-predecessors.repository.js';
 import { gitRepositoryMappings } from '../../schemas/deliveries/git-repository-mappings.schema.js';
 import { gitWebhookDeliveries } from '../../schemas/deliveries/git-webhook-deliveries.schema.js';
 import { gitWebhookReceivers } from '../../schemas/deliveries/git-webhook-receivers.schema.js';
@@ -50,6 +51,17 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
       if (!delivery?.work?.fact.taskKeys.includes(input.taskKey)) {
         if (existing !== null) await this.close(scope, input.organizationId, existing.id);
         return { status: 'closed' };
+      }
+      if (
+        delivery.work.prerequisiteIds !== undefined &&
+        (await new DrizzleGitRequestPredecessorsRepository().hasPendingForTask(
+          scope,
+          input.organizationId,
+          delivery.work.prerequisiteIds,
+          input.taskKey,
+        ))
+      ) {
+        throw new Error('An earlier Git request action has not settled.');
       }
       const rows =
         existing === null
@@ -97,7 +109,9 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
         await this.close(scope, input.organizationId, stored.id);
         return 'closed';
       }
-      await this.recordLink?.(scope, input.claim, delivery.receiverId, input.result);
+      if (delivery.work.recordLink === true) {
+        await this.recordLink?.(scope, input.claim, delivery.receiverId, input.result);
+      }
       await scope.db
         .update(gitDispatchClaims)
         .set({

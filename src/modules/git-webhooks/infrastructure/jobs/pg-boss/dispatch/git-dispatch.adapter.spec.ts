@@ -38,6 +38,24 @@ describe('GitDispatchJobsProducer', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  it('queues link-only work separately from the queue consumed by older workers', async () => {
+    const enqueue = vi.fn<JobProducer['enqueue']>().mockResolvedValue({
+      jobId: 'job-id',
+      duplicate: false,
+    });
+    const scope: JobsTransaction = { organizationId, client: { query: vi.fn() } };
+    const producer = new GitDispatchJobsProducer({ enqueue });
+
+    await producer.enqueue(scope, receiptId, 'CAD-482', true);
+
+    expect(enqueue).toHaveBeenCalledExactlyOnceWith(
+      scope,
+      'integration.dispatch-git-link',
+      { deliveryId: receiptId, taskKey: 'CAD-482' },
+      { occurrenceKey: `${receiptId}:CAD-482` },
+    );
+  });
+
   it('resolves the published producer token through Nest', async () => {
     const enqueue = vi.fn<JobProducer['enqueue']>().mockResolvedValue({
       jobId: 'job-id',

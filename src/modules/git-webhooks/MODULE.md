@@ -36,6 +36,7 @@ receiver has a deployment-supplied signing credential and a matching enabled dat
 - `git.pr-opened.v1`
 - `git.pr-merged.v1`
 - `git.pr-closed.v1`
+- `git.checks-completed.v1`
 
 Each fact carries the canonical task key, authorized placement and stable link ID and version. The
 provider content stays in Integration.
@@ -63,7 +64,12 @@ consumer and Task exposes its signed Git command.
   `v1` signature for the configured `whsec_` key authenticates the payload.
 - Up to 20 distinct task references are admitted together. Branch creation proposes `progress`,
   opening a pull request proposes `review`, and a merged pull request proposes `done` for keys with
-  a closing verb. Other merge references and closing a request only resolve authorized placement.
+  a closing verb. Other merge references only resolve authorized placement. A signed closure,
+  current request-head observation or completed check can only use an existing link for the same
+  receiver, verified provider binding and request number. A check must match the current observed
+  head and advance its check watermark. Conflicting heads at the same provider timestamp are ignored
+  because their delivery order cannot establish which one is current. These deliveries do not change
+  Task status.
   Task owns current
   visibility, the mapping author's authority, status progression and activity.
 - The worker uses the same Task command ID across its five attempts. It sends no action after the
@@ -74,6 +80,13 @@ consumer and Task exposes its signed Git command.
 - Admission locks the receiver, revalidates its revision and resolves the exact repository mapping
   under the tenant transaction. A fresh receipt, its alias and all of its target jobs commit
   together. An exact replay does not create any job.
+- The receiver selects at most 20 tasks from existing links and prior accepted work for the same
+  request. If an earlier opening or head observation still needs to settle, the dependent job keeps
+  its prerequisites and retries inside its dispatch window. A job without an approved Task
+  placement does not create a link.
+- Link-producing receipts go to `integration.dispatch-git-link` and preserve that choice until
+  settlement. Compatibility workers continue to handle the original status queue. A compatible
+  worker can drain the link queue after new link admissions are disabled.
 - Dispatch reserves its Task command ID in a short tenant transaction, performs HTTP outside the
   transaction and revalidates the receiver and mapping when recording Task's authorized placement.
 - A replayed Task receipt obtains current signed placement through a fresh no-op command. The

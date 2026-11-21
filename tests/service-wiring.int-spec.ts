@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule, createIntegrationApplication } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
-import { GIT_DISPATCH_QUEUE } from '../src/config/job-queues.js';
+import { GIT_LINK_DISPATCH_QUEUE } from '../src/config/job-queues.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
 // does not export its container fixtures yet and a service never depends on `testcontainers` itself,
@@ -60,6 +60,7 @@ const gitListId = '01938f6e-0000-7000-8000-000000000065';
 const gitTaskIdsByPath = new Map([
   ['/internal/v1/tasks/CAD-483/git-status-actions', '01938f6e-0000-7000-8000-000000000066'],
   ['/internal/v1/tasks/CAD-484/git-status-actions', '01938f6e-0000-7000-8000-000000000067'],
+  ['/internal/v1/tasks/CAD-485/git-status-actions', '01938f6e-0000-7000-8000-000000000068'],
 ]);
 const gitFixtureKey = randomBytes(32).toString('hex');
 
@@ -230,6 +231,7 @@ describe('integration-service wiring', () => {
     key: string | string[] | undefined;
     body: unknown;
   }[] = [];
+  let heldTaskReply: { readonly path: string; readonly released: Promise<void> } | undefined;
   const task = createHttpServer((incoming, outgoing) => {
     const body: Buffer[] = [];
     incoming.on('data', (chunk: Buffer) => body.push(chunk));
@@ -242,18 +244,30 @@ describe('integration-service wiring', () => {
         key: incoming.headers['idempotency-key'],
         body: command,
       });
-      outgoing.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'private, no-store',
-      });
-      outgoing.end(
-        JSON.stringify({
-          disposition: command.status === null ? 'no_op' : 'applied',
-          taskId: gitTaskIdsByPath.get(incoming.url ?? '') ?? gitTaskId,
-          listId: gitListId,
-          spaceId: gitSpaceId,
-        }),
-      );
+      const respond = (): void => {
+        if (outgoing.destroyed) return;
+        outgoing.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'private, no-store',
+        });
+        outgoing.end(
+          JSON.stringify({
+            disposition: command.status === null ? 'no_op' : 'applied',
+            taskId: gitTaskIdsByPath.get(incoming.url ?? '') ?? gitTaskId,
+            listId: gitListId,
+            spaceId: gitSpaceId,
+          }),
+        );
+      };
+      if (
+        heldTaskReply !== undefined &&
+        heldTaskReply.path === incoming.url &&
+        command.status === 'review'
+      ) {
+        void heldTaskReply.released.then(respond);
+        return;
+      }
+      respond();
     });
   });
   let app: NestExpressApplication | undefined;
@@ -404,7 +418,7 @@ describe('integration-service wiring', () => {
         tableowner: 'integration_migrator',
       })),
     );
-    expect(journal.rows).toEqual([{ applied: 5 }]);
+    expect(journal.rows).toEqual([{ applied: 7 }]);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -413,7 +427,106 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 5 }]);
+    expect(journal.rows).toEqual([{ applied: 7 }]);
+  });
+
+  it('retains a signed closure admitted before the earlier opening can record the link', async () => {
+    const taskKey = 'CAD-485';
+    const path = `/internal/v1/tasks/${taskKey}/git-status-actions`;
+    let allowReply: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      allowReply = resolve;
+    });
+    const tenant = service().get(TenantTransactionRunner);
+    const actor = await signer.sign('integration-service', {
+      actor: { type: 'system', id: 'api-gateway' },
+      organizationId: null,
+    });
+    const repository = { id: 81 };
+    const requestNumber = 225;
+    const send = (action: 'opened' | 'closed', deliveryId: string) => {
+      const raw = JSON.stringify({
+        repository,
+        installation: { id: 41 },
+        number: requestNumber,
+        action,
+        pull_request: {
+          number: requestNumber,
+          state: action === 'opened' ? 'open' : 'closed',
+          merged: false,
+          head: { ref: 'renamed-branch', repo: repository },
+          base: { ref: 'main', repo: repository },
+          title: action === 'opened' ? 'Correction CAD-485' : 'Correction',
+        },
+      });
+      return request(service().getHttpServer())
+        .post(`/internal/v1/webhooks/github?bindingId=${gitReceiverId}`)
+        .set('Authorization', `Bearer ${actor}`)
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Delivery', deliveryId)
+        .set('X-GitHub-Event', 'pull_request')
+        .set(
+          'X-Hub-Signature-256',
+          `sha256=${createHmac('sha256', gitFixtureKey).update(raw).digest('hex')}`,
+        )
+        .send(raw);
+    };
+    const opening = randomUUID();
+    const closing = randomUUID();
+    heldTaskReply = { path, released };
+    try {
+      await send('opened', opening).expect(204);
+      await vi.waitFor(
+        () => {
+          expect(taskCommands.some((command) => command.path === path)).toBe(true);
+        },
+        { timeout: 10_000, interval: 50 },
+      );
+      await send('closed', closing).expect(204);
+      const admitted = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+        tenant.run(({ client }) =>
+          client.query(
+            `select work->'prerequisiteIds' as prerequisites, work->'fact'->'taskKeys' as targets,
+                  (select receipt_id from git_webhook_delivery_ids where delivery_id = $1) as opening
+             from git_webhook_deliveries d join git_webhook_delivery_ids a
+               on (d.organization_id, d.id) = (a.organization_id, a.receipt_id)
+            where a.delivery_id = $2`,
+            [opening, closing],
+          ),
+        ),
+      );
+      const rows = admitted.rows as readonly {
+        readonly opening: string;
+        readonly prerequisites: readonly string[];
+        readonly targets: readonly string[];
+      }[];
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      expect(row?.opening).toEqual(expect.any(String));
+      expect(row?.prerequisites).toEqual([row?.opening]);
+      expect(row?.targets).toEqual([taskKey]);
+    } finally {
+      heldTaskReply = undefined;
+      allowReply();
+    }
+    await vi.waitFor(
+      async () => {
+        const events = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+          tenant.run(({ client }) =>
+            client.query(
+              `select event_name, (payload->>'version')::int as version
+             from outbox_events where payload->>'taskKey' = $1 order by version`,
+              [taskKey],
+            ),
+          ),
+        );
+        expect(events.rows).toEqual([
+          { event_name: 'git.pr-opened.v1', version: 1 },
+          { event_name: 'git.pr-closed.v1', version: 2 },
+        ]);
+      },
+      { timeout: 15_000 },
+    );
   });
 
   it('accepts one pending Git action for two signed deliveries of the same raw body', async () => {
@@ -423,6 +536,8 @@ describe('integration-service wiring', () => {
       organizationId: null,
     });
     const repository = { id: 81 };
+    const sha = 'a'.repeat(40);
+    const branch = 'cad-482-ecran-connexion-sso';
     const payload = {
       repository,
       installation: { id: 41 },
@@ -432,23 +547,24 @@ describe('integration-service wiring', () => {
         number: 214,
         state: 'open',
         merged: false,
-        head: { ref: 'cad-482-ecran-connexion-sso', repo: repository },
+        head: { ref: branch, sha, repo: repository },
         base: { ref: 'main', repo: repository },
         title: 'Écran de connexion (CAD-482)',
         body: null,
+        updated_at: '2026-11-08T16:18:43Z',
       },
     };
     const body = `\n${JSON.stringify(payload, null, 2)}\n`;
     const digest = createHash('sha256').update(body).digest('hex');
     const signature = `sha256=${createHmac('sha256', gitFixtureKey).update(body).digest('hex')}`;
     const path = `/internal/v1/webhooks/github?bindingId=${gitReceiverId}`;
-    const deliver = (authorization: string, key = signature, raw = body) =>
+    const deliver = (authorization: string, key = signature, raw = body, event = 'pull_request') =>
       request(service().getHttpServer())
         .post(path)
         .set('Authorization', `Bearer ${authorization}`)
         .set('Content-Type', 'application/json')
         .set('X-GitHub-Delivery', randomUUID())
-        .set('X-GitHub-Event', 'pull_request')
+        .set('X-GitHub-Event', event)
         .set('X-Hub-Signature-256', key)
         .send(raw);
 
@@ -537,10 +653,48 @@ describe('integration-service wiring', () => {
       { timeout: 15_000, interval: 100 },
     );
 
+    const checks = JSON.stringify({
+      repository,
+      installation: payload.installation,
+      action: 'completed',
+      check_suite: {
+        id: 315,
+        status: 'completed',
+        conclusion: 'success',
+        head_branch: branch,
+        head_sha: sha,
+        updated_at: '2026-11-08T16:18:44Z',
+        pull_requests: [payload.pull_request],
+      },
+    });
+    const checkSignature = `sha256=${createHmac('sha256', gitFixtureKey).update(checks).digest('hex')}`;
+    await deliver(gatewayToken, checkSignature, checks, 'check_suite').expect(204);
+    await deliver(gatewayToken, checkSignature, checks, 'check_suite').expect(204);
+    await vi.waitFor(
+      async () => {
+        const events = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+          tenant.run(({ client }) =>
+            client.query(
+              `select (payload->>'version')::int as version from outbox_events
+               where event_name = 'git.checks-completed.v1' and payload->>'taskKey' = 'CAD-482'`,
+            ),
+          ),
+        );
+        expect(events.rows).toEqual([{ version: 2 }]);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+
     const closed = JSON.stringify({
       ...payload,
       action: 'closed',
-      pull_request: { ...payload.pull_request, state: 'closed' },
+      pull_request: {
+        ...payload.pull_request,
+        state: 'closed',
+        head: { ...payload.pull_request.head, ref: 'renamed' },
+        title: 'No longer references any task',
+        updated_at: '2026-11-08T16:18:45Z',
+      },
     });
     const closingSignature = `sha256=${createHmac('sha256', gitFixtureKey).update(closed).digest('hex')}`;
     await deliver(gatewayToken, closingSignature, closed).expect(204);
@@ -549,16 +703,23 @@ describe('integration-service wiring', () => {
         const closedLink = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
           tenant.run(({ client }) =>
             client.query(
-              `select link.status, link.version::int, event.event_name
+              `select link.status, link.version::int, event.event_name, event.payload->'changed' as changed
              from git_links link join outbox_events event
                on event.organization_id = link.organization_id
                and event.payload->>'gitLinkId' = link.id::text
-             where link.task_key = 'CAD-482' and event.event_name = 'git.pr-closed.v1'`,
+             where link.task_key = 'CAD-482' and event.event_name in ('git.checks-completed.v1', 'git.pr-closed.v1')
+             order by (event.payload->>'version')::int`,
             ),
           ),
         );
         expect(closedLink.rows).toEqual([
-          { status: 'closed', version: 2, event_name: 'git.pr-closed.v1' },
+          {
+            status: 'closed',
+            version: 3,
+            event_name: 'git.checks-completed.v1',
+            changed: ['checks'],
+          },
+          { status: 'closed', version: 3, event_name: 'git.pr-closed.v1', changed: ['state'] },
         ]);
         expect(
           taskCommands.findLast(
@@ -612,6 +773,7 @@ describe('integration-service wiring', () => {
     const interrupted = vi
       .spyOn(producer, 'enqueue')
       .mockImplementationOnce(async (transaction, queue, payload, options) => {
+        expect(queue).toBe(GIT_LINK_DISPATCH_QUEUE.name);
         const result = await enqueue(transaction, queue, payload, options);
         const stored = await transaction.client.query(
           'select id from pgboss.job where name = $1 and id = $2',
@@ -648,7 +810,7 @@ describe('integration-service wiring', () => {
       );
     expect((await receiptCounts()).rows).toEqual([{ receipts: 0, aliases: 0 }]);
     const leftover = await migrator.query('select id from pgboss.job where name = $1 and id = $2', [
-      GIT_DISPATCH_QUEUE.name,
+      GIT_LINK_DISPATCH_QUEUE.name,
       firstJobId,
     ]);
     expect(leftover.rows).toEqual([]);
@@ -883,7 +1045,7 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 5 }]);
+    expect(journal.rows).toEqual([{ applied: 7 }]);
   });
 
   it('publishes successive outbox events and remains ready', async () => {

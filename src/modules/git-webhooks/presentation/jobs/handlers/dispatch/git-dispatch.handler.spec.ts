@@ -13,17 +13,17 @@ function deliveryIdAt(time: number): string {
   return `${milliseconds.slice(0, 8)}-${milliseconds.slice(8)}-7c3d-8e4f-5a6b7c8d9e01`;
 }
 
-function setup() {
+function setup(queueName: string = queue) {
   const execute = vi
     .fn<DispatchGitDelivery['execute']>()
     .mockResolvedValue({ status: 'completed' });
   const work = vi.fn<JobWorkerRegistry['work']>().mockResolvedValue(undefined);
-  const handler = new GitDispatchJobHandler({ work }, { execute }, queue);
+  const handler = new GitDispatchJobHandler({ work }, { execute }, queueName);
   const deliveryId = deliveryIdAt(Date.now());
   const job: Job = {
     id: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e04',
     organizationId,
-    queue,
+    queue: queueName,
     payload: { deliveryId, taskKey: 'CAD-482' },
     attempt: 1,
     signal: new AbortController().signal,
@@ -32,21 +32,25 @@ function setup() {
 }
 
 describe('GitDispatchJobHandler', () => {
-  it('registers the worker and takes the tenant from the job envelope', async () => {
-    const { deliveryId, execute, handler, job, work } = setup();
-    await handler.onApplicationBootstrap();
-    const registration = work.mock.calls[0];
-    expect(registration?.[0]).toBe(queue);
-    if (registration === undefined) throw new Error('Expected a worker registration.');
+  it.each([queue, 'integration.dispatch-git-link'])(
+    'registers only %s and takes the tenant from the job envelope',
+    async (queueName) => {
+      const { deliveryId, execute, handler, job, work } = setup(queueName);
+      await handler.onApplicationBootstrap();
+      const registration = work.mock.calls[0];
+      expect(work).toHaveBeenCalledTimes(1);
+      expect(registration?.[0]).toBe(queueName);
+      if (registration === undefined) throw new Error('Expected a worker registration.');
 
-    await registration[1](job);
+      await registration[1](job);
 
-    expect(execute).toHaveBeenCalledExactlyOnceWith({
-      organizationId,
-      deliveryId,
-      taskKey: 'CAD-482',
-    });
-  });
+      expect(execute).toHaveBeenCalledExactlyOnceWith({
+        organizationId,
+        deliveryId,
+        taskKey: 'CAD-482',
+      });
+    },
+  );
 
   it.each([
     { organizationId: null },

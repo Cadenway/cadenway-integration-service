@@ -1,7 +1,10 @@
 import { JobProducer, type JobsTransaction } from '@cadenway/nest-jobs/runtime';
 import { Inject, Injectable } from '@nestjs/common';
 
-import { GIT_DISPATCH_QUEUE } from '../../../../../../config/job-queues.js';
+import {
+  GIT_DISPATCH_QUEUE,
+  GIT_LINK_DISPATCH_QUEUE,
+} from '../../../../../../config/job-queues.js';
 
 /** Records one job per authenticated receipt and task in the receipt's PostgreSQL transaction. */
 @Injectable()
@@ -12,14 +15,19 @@ export class GitDispatchJobsProducer {
   // #endregion
 
   // #region Methods
-  /** The job inherits the scope's tenant and contains only the two dispatch identifiers. */
-  public async enqueue(scope: JobsTransaction, receiptId: string, taskKey: string): Promise<void> {
+  /** Sends link-only work to its own queue and preserves the receipt-scoped occurrence key. */
+  public async enqueue(
+    scope: JobsTransaction,
+    receiptId: string,
+    taskKey: string,
+    linkOnly = false,
+  ): Promise<void> {
     if (scope.organizationId === null)
       throw new Error('Git dispatch requires a tenant transaction.');
 
     await this.producer.enqueue(
       scope,
-      GIT_DISPATCH_QUEUE.name,
+      linkOnly ? GIT_LINK_DISPATCH_QUEUE.name : GIT_DISPATCH_QUEUE.name,
       { deliveryId: receiptId, taskKey },
       { occurrenceKey: `${receiptId}:${taskKey}` },
     );
