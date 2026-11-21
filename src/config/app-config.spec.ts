@@ -31,6 +31,8 @@ describe('appConfigSchema', () => {
       NATS_USER: 'integration',
       NATS_PASSWORD: 'integration',
       INTERNAL_TOKEN_AUDIENCE: 'integration-service',
+      INTERNAL_TOKEN_ISSUER: 'integration-service',
+      GIT_WEBHOOK_RECEIVERS: [],
       INTERNAL_TOKEN_TRUSTED_ISSUERS: {
         'api-gateway': [
           {
@@ -51,6 +53,26 @@ describe('appConfigSchema', () => {
 
     expect(() => loadConfig(appConfigSchema, example)).not.toThrow();
     expect(() => loadConfig(migrationConfigSchema, example)).not.toThrow();
+  });
+
+  it('requires Task dispatch settings when a receiver is configured', () => {
+    const receiver = {
+      bindingId: '01938f6e-0000-7000-8000-000000000061',
+      organizationId: '01938f6e-0000-7000-8000-000000000062',
+      provider: 'github',
+      revision: 1,
+      signingSecret: 'synthetic-fixture-key'.repeat(2),
+    };
+    const result = appConfigSchema.safeParse({
+      ...complete,
+      GIT_WEBHOOK_RECEIVERS: JSON.stringify([receiver]),
+    });
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('Expected config validation to fail.');
+    expect(result.error.issues.map((issue) => issue.path[0])).toEqual([
+      'INTERNAL_TOKEN_PRIVATE_JWK',
+      'TASK_SERVICE_URL',
+    ]);
   });
 
   it('refuses to start without the database, the broker, the audience or the trusted issuers', () => {

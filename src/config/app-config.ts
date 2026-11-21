@@ -1,10 +1,47 @@
-import { baseConfigShape, internalTokenVerifierConfigShape } from '@cadenway/nest-common';
-import type { BaseConfig, InternalTokenVerifierConfig } from '@cadenway/nest-common';
+import {
+  baseConfigShape,
+  internalTokenSignerConfigShape,
+  internalTokenVerifierConfigShape,
+} from '@cadenway/nest-common';
+import type {
+  BaseConfig,
+  InternalTokenSignerConfig,
+  InternalTokenVerifierConfig,
+} from '@cadenway/nest-common';
 import { databaseConfigShape } from '@cadenway/nest-common/database';
 import type { DatabaseConfig } from '@cadenway/nest-common/database';
 import { messagingConfigShape } from '@cadenway/nest-messaging';
 import type { MessagingConfig } from '@cadenway/nest-messaging';
 import { z } from 'zod';
+
+const gitReceiverSchema = z.strictObject({
+  bindingId: z.uuidv7().transform((id) => id.toLowerCase()),
+  organizationId: z.uuidv7().transform((id) => id.toLowerCase()),
+  provider: z.enum(['github', 'gitlab']),
+  revision: z.int().positive(),
+  signingSecret: z.string().min(32).max(1024),
+});
+
+const gitWebhookReceiversSchema = z
+  .string()
+  .default('[]')
+  .transform((value, ctx) => {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'Expected a JSON array of receiver settings.' });
+      return z.NEVER;
+    }
+  })
+  .pipe(
+    z
+      .array(gitReceiverSchema)
+      .refine(
+        (receivers) =>
+          new Set(receivers.map((receiver) => receiver.bindingId)).size === receivers.length,
+        { message: 'Receiver IDs must be distinct.' },
+      ),
+  );
 
 /**
  * Type AppConfig
@@ -29,13 +66,21 @@ import { z } from 'zod';
  *
  * `OTEL_EXPORTER_OTLP_ENDPOINT` is read by `telemetry.ts`, before the application exists.
  * `INTERNAL_TOKEN_ISSUER`, `INTERNAL_TOKEN_PRIVATE_JWK` and `TASK_SERVICE_URL` are set for the
- * calls of this service to task-service and read by nothing until the first one is written; the
- * signer shape of the kit joins this schema then, since `.env.example` cannot carry the private key
- * it requires.
+ * calls of this service to task-service. A signing key and Task URL are required when a Git
+ * webhook receiver is configured.
  *
  * @type {BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig}
  */
-export type AppConfig = BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig;
+export type AppConfig = BaseConfig &
+  DatabaseConfig &
+  MessagingConfig &
+  InternalTokenVerifierConfig &
+  Pick<InternalTokenSignerConfig, 'INTERNAL_TOKEN_ISSUER'> & {
+    readonly INTERNAL_TOKEN_PRIVATE_JWK?:
+      InternalTokenSignerConfig['INTERNAL_TOKEN_PRIVATE_JWK'] | undefined;
+    readonly TASK_SERVICE_URL?: string | undefined;
+    readonly GIT_WEBHOOK_RECEIVERS: readonly z.output<typeof gitReceiverSchema>[];
+  };
 
 /**
  * Constant appConfigSchema
@@ -48,12 +93,30 @@ export type AppConfig = BaseConfig & DatabaseConfig & MessagingConfig & Internal
  *
  * @type {z.ZodType<AppConfig>}
  */
-export const appConfigSchema: z.ZodType<AppConfig> = z.object({
-  ...baseConfigShape,
-  ...databaseConfigShape,
-  ...messagingConfigShape,
-  ...internalTokenVerifierConfigShape,
-});
+export const appConfigSchema: z.ZodType<AppConfig> = z
+  .object({
+    ...baseConfigShape,
+    ...databaseConfigShape,
+    ...messagingConfigShape,
+    ...internalTokenVerifierConfigShape,
+    INTERNAL_TOKEN_ISSUER: z.literal('integration-service').default('integration-service'),
+    INTERNAL_TOKEN_PRIVATE_JWK:
+      internalTokenSignerConfigShape.INTERNAL_TOKEN_PRIVATE_JWK.optional(),
+    TASK_SERVICE_URL: z.url({ protocol: /^https?$/u }).optional(),
+    GIT_WEBHOOK_RECEIVERS: gitWebhookReceiversSchema,
+  })
+  .superRefine((config, ctx) => {
+    if (config.GIT_WEBHOOK_RECEIVERS.length === 0) return;
+    for (const name of ['INTERNAL_TOKEN_PRIVATE_JWK', 'TASK_SERVICE_URL'] as const) {
+      if (config[name] === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [name],
+          message: 'Required for Git webhook dispatch.',
+        });
+      }
+    }
+  });
 
 /**
  * Interface MigrationConfig

@@ -35,6 +35,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the generated Task client
+        run: |
+          pnpm generate:clients
+          client_dir=src/modules/git-webhooks/infrastructure/adapters/task-service/generated
+          if [ -n "$(git status --porcelain -- "$client_dir")" ]; then
+            echo "::error::Task client differs from the installed contract. Run pnpm generate:clients and commit the output."
+            exit 1
+          fi
       - run: pnpm format:check
       - run: pnpm test:lint
       - run: pnpm lint

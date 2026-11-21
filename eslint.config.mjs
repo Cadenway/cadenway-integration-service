@@ -7,7 +7,15 @@ import tseslint from 'typescript-eslint';
 import memberRegions from './rules/member-regions.mjs';
 
 export default defineConfig(
-  globalIgnores(['dist/', 'coverage/', 'migrations/', 'docs/', '.claude/', '.codex/']),
+  globalIgnores([
+    'dist/',
+    'coverage/',
+    'migrations/',
+    'docs/',
+    '.claude/',
+    '.codex/',
+    'src/modules/git-webhooks/infrastructure/adapters/task-service/generated/',
+  ]),
   eslint.configs.recommended,
   tseslint.configs.strictTypeChecked,
   tseslint.configs.stylisticTypeChecked,

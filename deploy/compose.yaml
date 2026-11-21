@@ -11,8 +11,8 @@
 # scalar gives the service one line of JSON.
 #
 # This service also calls task-service: it signs those calls as the issuer integration-service with
-# its own private key, and reaches it at TASK_SERVICE_URL. Nothing reads these three variables
-# until the first call is written.
+# its own private key, and reaches it at TASK_SERVICE_URL. With no GIT_WEBHOOK_RECEIVERS declared
+# the deployment does not accept Git webhook deliveries.
 #
 # MIGRATION_DATABASE_URL is deliberately absent: the GitOps agent of cadenway-ops hands the
 # migrator's URL to the one-off migration container only (docs/database.md there), so the running
@@ -33,6 +33,7 @@ services:
       INTERNAL_TOKEN_ISSUER: integration-service
       INTERNAL_TOKEN_PRIVATE_JWK: ${INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}
       TASK_SERVICE_URL: ${TASK_SERVICE_URL}
+      GIT_WEBHOOK_RECEIVERS: ${GIT_WEBHOOK_RECEIVERS:-[]}
     networks:
       - internal
     healthcheck:

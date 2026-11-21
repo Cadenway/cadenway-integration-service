@@ -1,20 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
-import {
-  createApplication,
-  InternalTokenSigner,
-  loadConfig,
-  runWithOrganizationContext,
-} from '@cadenway/nest-common';
+import { InternalTokenSigner, loadConfig, runWithOrganizationContext } from '@cadenway/nest-common';
 import type {
   Ed25519PrivateJwk,
   Ed25519PublicJwk,
   OrganizationContext,
 } from '@cadenway/nest-common';
 import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest-common/database';
+import { JobProducer } from '@cadenway/nest-jobs/runtime';
 import { Controller, Get, Injectable, Module } from '@nestjs/common';
 import type { BeforeApplicationShutdown } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -22,8 +19,9 @@ import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { AppModule } from '../src/app.module.js';
+import { AppModule, createIntegrationApplication } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { GIT_DISPATCH_QUEUE } from '../src/config/job-queues.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
 // does not export its container fixtures yet and a service never depends on `testcontainers` itself,
@@ -53,12 +51,26 @@ const otherOrganizationId = '01938f6e-0000-7000-8000-000000000002';
 /** Camille Martin (CM), the member of Atelier Nord the mockup signs in as. */
 const camilleMartinId = '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c24';
 
+const gitReceiverId = '01938f6e-0000-7000-8000-000000000061';
+const gitSpaceId = '01938f6e-0000-7000-8000-000000000062';
+const gitIntegrationId = '01938f6e-0000-7000-8000-000000000063';
+const gitTaskId = '01938f6e-0000-7000-8000-000000000064';
+const gitListId = '01938f6e-0000-7000-8000-000000000065';
+const gitFixtureKey = randomBytes(32).toString('hex');
+
 /** The tables of the platform module, as the kit names them. */
 const platformTables = [
   'event_versions',
   'idempotency_keys',
   'outbox_events',
   'processed_events',
+] as const;
+const gitTables = [
+  'git_dispatch_claims',
+  'git_repository_mappings',
+  'git_webhook_deliveries',
+  'git_webhook_delivery_ids',
+  'git_webhook_receivers',
 ] as const;
 
 /**
@@ -205,6 +217,35 @@ class WiringProbeController {
 
 describe('integration-service wiring', () => {
   const gateway = keyPair();
+  const integration = keyPair();
+  const taskCommands: {
+    path: string | undefined;
+    key: string | string[] | undefined;
+    body: unknown;
+  }[] = [];
+  const task = createHttpServer((incoming, outgoing) => {
+    const body: Buffer[] = [];
+    incoming.on('data', (chunk: Buffer) => body.push(chunk));
+    incoming.on('end', () => {
+      taskCommands.push({
+        path: incoming.url,
+        key: incoming.headers['idempotency-key'],
+        body: JSON.parse(Buffer.concat(body).toString('utf8')) as unknown,
+      });
+      outgoing.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'private, no-store',
+      });
+      outgoing.end(
+        JSON.stringify({
+          disposition: 'applied',
+          taskId: gitTaskId,
+          listId: gitListId,
+          spaceId: gitSpaceId,
+        }),
+      );
+    });
+  });
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
@@ -260,6 +301,24 @@ describe('integration-service wiring', () => {
     vi.stubEnv('NATS_USER', 'integration');
     vi.stubEnv('NATS_PASSWORD', 'integration');
     vi.stubEnv('INTERNAL_TOKEN_AUDIENCE', 'integration-service');
+    await new Promise<void>((resolve) => task.listen(0, '127.0.0.1', resolve));
+    const taskAddress = task.address();
+    if (taskAddress === null || typeof taskAddress === 'string')
+      throw new Error('Task fixture has no port.');
+    vi.stubEnv('TASK_SERVICE_URL', `http://127.0.0.1:${String(taskAddress.port)}`);
+    vi.stubEnv('INTERNAL_TOKEN_PRIVATE_JWK', JSON.stringify(integration.privateJwk));
+    vi.stubEnv(
+      'GIT_WEBHOOK_RECEIVERS',
+      JSON.stringify([
+        {
+          bindingId: gitReceiverId,
+          organizationId: atelierNordId,
+          provider: 'github',
+          revision: 1,
+          signingSecret: gitFixtureKey,
+        },
+      ]),
+    );
     vi.stubEnv(
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
       JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
@@ -274,28 +333,45 @@ describe('integration-service wiring', () => {
 
     // As main.ts: the configuration is read inside the start-up, never when a module is imported.
     const config = loadConfig(appConfigSchema);
-    app = await createApplication(ProbedApplicationModule, {
-      service: 'integration-service',
-      config,
-      internalToken: {
-        verifier: {
-          audience: config.INTERNAL_TOKEN_AUDIENCE,
-          trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
-        },
-      },
-      logDestination: { write: (): void => undefined },
+    app = await createIntegrationApplication(config, ProbedApplicationModule, {
+      write: (): void => undefined,
     });
     await app.init();
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
       privateJwk: gateway.privateJwk,
     });
+
+    const tenant = service().get(TenantTransactionRunner);
+    await runWithOrganizationContext(memberOf(atelierNordId), () =>
+      tenant.run(async (tx) => {
+        await tx.client.query(
+          `insert into git_webhook_receivers (organization_id, id, provider)
+           values ($1, $2, 'github')`,
+          [atelierNordId, gitReceiverId],
+        );
+        await tx.client.query(
+          `insert into git_repository_mappings
+             (organization_id, receiver_id, provider, repository_id, installation_id,
+              space_id, integration_id, mapping_author_user_id)
+           values ($1, $2, 'github', 81, 41, $3, $4, $5)`,
+          [atelierNordId, gitReceiverId, gitSpaceId, gitIntegrationId, camilleMartinId],
+        );
+      }),
+    );
   });
 
   afterAll(async () => {
     try {
       releaseShutdown();
       await app?.close();
+      if (task.listening) {
+        await new Promise<void>((resolve) => {
+          task.close(() => {
+            resolve();
+          });
+        });
+      }
       await migrator.end();
     } finally {
       vi.unstubAllEnvs();
@@ -312,9 +388,12 @@ describe('integration-service wiring', () => {
     );
 
     expect(tables.rows).toEqual(
-      platformTables.map((tablename) => ({ tablename, tableowner: 'integration_migrator' })),
+      [...platformTables, ...gitTables].sort().map((tablename) => ({
+        tablename,
+        tableowner: 'integration_migrator',
+      })),
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(journal.rows).toEqual([{ applied: 4 }]);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -323,7 +402,225 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(journal.rows).toEqual([{ applied: 4 }]);
+  });
+
+  it('accepts one pending Git action for two signed deliveries of the same raw body', async () => {
+    const tenant = service().get(TenantTransactionRunner);
+    const gatewayToken = await signer.sign('integration-service', {
+      actor: { type: 'system', id: 'api-gateway' },
+      organizationId: null,
+    });
+    const repository = { id: 81 };
+    const body = `\n${JSON.stringify(
+      {
+        repository,
+        installation: { id: 41 },
+        action: 'opened',
+        number: 214,
+        pull_request: {
+          number: 214,
+          state: 'open',
+          merged: false,
+          head: { ref: 'cad-482-ecran-connexion-sso', repo: repository },
+          base: { ref: 'main', repo: repository },
+          title: 'Écran de connexion (CAD-482)',
+          body: null,
+        },
+      },
+      null,
+      2,
+    )}\n`;
+    const digest = createHash('sha256').update(body).digest('hex');
+    const signature = `sha256=${createHmac('sha256', gitFixtureKey).update(body).digest('hex')}`;
+    const path = `/internal/v1/webhooks/github?bindingId=${gitReceiverId}`;
+    const deliver = (authorization: string, key = signature) =>
+      request(service().getHttpServer())
+        .post(path)
+        .set('Authorization', `Bearer ${authorization}`)
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Delivery', randomUUID())
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', key)
+        .send(body);
+
+    const results = await Promise.all([deliver(gatewayToken), deliver(gatewayToken)]);
+    expect(results.map((result) => result.status)).toEqual([204, 204]);
+    expect(results.map((result) => result.headers['cache-control'])).toEqual([
+      'private, no-store',
+      'private, no-store',
+    ]);
+    const admitted = await runWithOrganizationContext(memberOf(atelierNordId), () =>
+      tenant.run((tx) =>
+        tx.client.query(
+          `select work->'fact'->>'trigger' as trigger, work->'fact'->'taskKeys' as keys
+             from git_webhook_deliveries where receiver_id = $1 and digest = $2`,
+          [gitReceiverId, digest],
+        ),
+      ),
+    );
+    expect(admitted.rows).toEqual([{ trigger: 'pr_open', keys: ['CAD-482'] }]);
+    const refusal = await deliver(gatewayToken, `sha256=${'0'.repeat(64)}`);
+    expect(refusal.status).toBe(403);
+    expect(refusal.body).toMatchObject({ code: 'webhook.authentication-failed' });
+    expect(refusal.headers['cache-control']).toBe('private, no-store');
+
+    await vi.waitFor(
+      async () => {
+        const claim = await runWithOrganizationContext(memberOf(atelierNordId), () =>
+          tenant.run((tx) =>
+            tx.client.query(
+              `select claim.id, claim.disposition
+               from git_dispatch_claims claim join git_webhook_deliveries delivery
+                 on delivery.organization_id = claim.organization_id and delivery.id = claim.delivery_id
+               where delivery.receiver_id = $1 and delivery.digest = $2 and claim.status = 'completed'`,
+              [gitReceiverId, digest],
+            ),
+          ),
+        );
+        const claims = claim.rows as readonly {
+          readonly id: string;
+          readonly disposition: string;
+        }[];
+        expect(claims.map(({ disposition }) => disposition)).toEqual(['applied']);
+        expect(typeof claims[0]?.id).toBe('string');
+        expect(
+          taskCommands.filter(
+            ({ path }) => path === '/internal/v1/tasks/CAD-482/git-status-actions',
+          ),
+        ).toEqual([
+          {
+            path: '/internal/v1/tasks/CAD-482/git-status-actions',
+            key: claims[0]?.id,
+            body: {
+              provider: 'github',
+              mappingAuthorUserId: camilleMartinId,
+              spaceId: gitSpaceId,
+              status: 'review',
+            },
+          },
+        ]);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+  });
+
+  it('rolls back the receipt, alias and first job when admission cannot enqueue every target', async () => {
+    const tenant = service().get(TenantTransactionRunner);
+    const providerDeliveryId = randomUUID();
+    const gatewayToken = await signer.sign('integration-service', {
+      actor: { type: 'system', id: 'api-gateway' },
+      organizationId: null,
+    });
+    const repository = { id: 81 };
+    const raw = JSON.stringify({
+      repository,
+      installation: { id: 41 },
+      action: 'opened',
+      number: 215,
+      pull_request: {
+        number: 215,
+        state: 'open',
+        merged: false,
+        head: { ref: 'cad-483-revision', repo: repository },
+        base: { ref: 'main', repo: repository },
+        title: 'Révision de CAD-483 et CAD-484',
+        body: null,
+      },
+    });
+    const digest = createHash('sha256').update(raw).digest('hex');
+    const signature = `sha256=${createHmac('sha256', gitFixtureKey).update(raw).digest('hex')}`;
+    const deliver = () =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/webhooks/github?bindingId=${gitReceiverId}`)
+        .set('Authorization', `Bearer ${gatewayToken}`)
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Delivery', providerDeliveryId)
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', signature)
+        .send(raw);
+
+    const producer = service().get(JobProducer);
+    const enqueue = producer.enqueue.bind(producer);
+    let firstJobId: string | undefined;
+    let visibleInsideAdmission = false;
+    const interrupted = vi
+      .spyOn(producer, 'enqueue')
+      .mockImplementationOnce(async (transaction, queue, payload, options) => {
+        const result = await enqueue(transaction, queue, payload, options);
+        const stored = await transaction.client.query(
+          'select id from pgboss.job where name = $1 and id = $2',
+          [queue, result.jobId],
+        );
+        firstJobId = result.jobId;
+        visibleInsideAdmission = stored.rows.length === 1 && !result.duplicate;
+        return result;
+      })
+      .mockRejectedValueOnce(new Error('Fixture rejected the second job.'));
+    try {
+      const failed = await deliver();
+      expect(failed.status).toBe(503);
+      expect(failed.body).toMatchObject({ code: 'integration.unavailable' });
+      expect(interrupted).toHaveBeenCalledTimes(2);
+    } finally {
+      interrupted.mockRestore();
+    }
+    expect(visibleInsideAdmission).toBe(true);
+    if (firstJobId === undefined) throw new Error('The first job was never inserted.');
+
+    const receiptCounts = () =>
+      runWithOrganizationContext(memberOf(atelierNordId), () =>
+        tenant.run((tx) =>
+          tx.client.query(
+            `select
+               (select count(*)::int from git_webhook_deliveries
+                 where organization_id = $1 and receiver_id = $2 and digest = $3) as receipts,
+               (select count(*)::int from git_webhook_delivery_ids
+                 where organization_id = $1 and receiver_id = $2 and delivery_id = $4) as aliases`,
+            [atelierNordId, gitReceiverId, digest, providerDeliveryId],
+          ),
+        ),
+      );
+    expect((await receiptCounts()).rows).toEqual([{ receipts: 0, aliases: 0 }]);
+    const leftover = await migrator.query('select id from pgboss.job where name = $1 and id = $2', [
+      GIT_DISPATCH_QUEUE.name,
+      firstJobId,
+    ]);
+    expect(leftover.rows).toEqual([]);
+    const paths = [
+      '/internal/v1/tasks/CAD-483/git-status-actions',
+      '/internal/v1/tasks/CAD-484/git-status-actions',
+    ];
+    const sentPaths = () =>
+      taskCommands
+        .flatMap(({ path }) => (path !== undefined && paths.includes(path) ? [path] : []))
+        .toSorted();
+    expect(sentPaths()).toEqual([]);
+
+    expect((await deliver()).status).toBe(204);
+    expect((await receiptCounts()).rows).toEqual([{ receipts: 1, aliases: 1 }]);
+    await vi.waitFor(
+      async () => {
+        const claims = await runWithOrganizationContext(memberOf(atelierNordId), () =>
+          tenant.run((tx) =>
+            tx.client.query(
+              `select claim.task_key, claim.status, claim.disposition
+               from git_dispatch_claims claim join git_webhook_delivery_ids alias
+                 on alias.organization_id = claim.organization_id and alias.receipt_id = claim.delivery_id
+               where alias.organization_id = $1 and alias.receiver_id = $2 and alias.delivery_id = $3
+               order by claim.task_key`,
+              [atelierNordId, gitReceiverId, providerDeliveryId],
+            ),
+          ),
+        );
+        expect(claims.rows).toEqual([
+          { task_key: 'CAD-483', status: 'completed', disposition: 'applied' },
+          { task_key: 'CAD-484', status: 'completed', disposition: 'applied' },
+        ]);
+        expect(sentPaths()).toEqual(paths);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
   });
 
   it('forces row-level security on the tables that carry an organization', async () => {
@@ -343,12 +640,14 @@ describe('integration-service wiring', () => {
 
     expect(tables.rows).toEqual([
       { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
+      ...gitTables.map((relname) => ({ relname, relrowsecurity: true, relforcerowsecurity: true })),
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'outbox_events', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'processed_events', relrowsecurity: false, relforcerowsecurity: false },
     ]);
     expect(policies.rows).toEqual([
       { tablename: 'event_versions', policyname: 'event_versions_organization_isolation' },
+      ...gitTables.map((tablename) => ({ tablename, policyname: `${tablename}_tenant_isolation` })),
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
       { tablename: 'outbox_events', policyname: 'outbox_events_organization_isolation' },
     ]);
@@ -519,7 +818,7 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(journal.rows).toEqual([{ applied: 4 }]);
   });
 
   it('publishes successive outbox events and remains ready', async () => {

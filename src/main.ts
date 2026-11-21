@@ -1,7 +1,6 @@
-import { createApplication, loadConfig, runApplication } from '@cadenway/nest-common';
-import type { NestExpressApplication } from '@nestjs/platform-express';
+import { loadConfig, runApplication } from '@cadenway/nest-common';
 
-import { AppModule } from './app.module.js';
+import { createIntegrationApplication } from './app.module.js';
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 
@@ -16,15 +15,6 @@ import type { AppConfig } from './config/app-config.js';
 // comes from that token only.
 await runApplication({ service: 'integration-service' }, async (): Promise<void> => {
   const config: Readonly<AppConfig> = loadConfig(appConfigSchema);
-  const app: NestExpressApplication = await createApplication(AppModule, {
-    service: 'integration-service',
-    config,
-    internalToken: {
-      verifier: {
-        audience: config.INTERNAL_TOKEN_AUDIENCE,
-        trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
-      },
-    },
-  });
+  const app = await createIntegrationApplication(config);
   await app.listen(config.PORT);
 });
