@@ -21,7 +21,11 @@ import type { NextFunction, Request, Response } from 'express';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
-import { GIT_DISPATCH_QUEUE } from './config/job-queues.js';
+import {
+  GIT_DISPATCH_QUEUE,
+  GIT_LINK_DISPATCH_QUEUE,
+  GIT_PURGE_QUEUE,
+} from './config/job-queues.js';
 import { GitWebhooksModule } from './modules/git-webhooks/git-webhooks.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 
@@ -44,8 +48,8 @@ import { PlatformModule } from './modules/platform/platform.module.js';
  *   `_INBOX.integration` the broker requires. The creation waits for the first connection, then
  *   checks that the `EVENTS` stream exists: cadenway-ops creates the streams
  *   (`manageStreams: false`), and only notification-service runs the dead-letter worker. The
- *   service publishes and consumes nothing yet: `@cadenway/contracts` defines neither its `git.*`
- *   events nor the `task.purged` event it listens to.
+ *   Git link publication and the Task purge subscription are enabled together by
+ *   `GIT_LINK_EVENTS_ENABLED` after the broker grants the named durable.
  * - `OutboxModule`: the outbox writer, the PostgreSQL deduplicator and the relay, which polls
  *   `outbox_events` every second in a system transaction and publishes the pending rows. It runs in
  *   every replica; `for update skip locked` keeps two of them from publishing the same row.
@@ -94,7 +98,7 @@ import { PlatformModule } from './modules/platform/platform.module.js';
       inject: [CONFIG],
       useFactory: (config: AppConfig) => ({
         connection: { connectionString: config.DATABASE_URL },
-        queues: [GIT_DISPATCH_QUEUE],
+        queues: [GIT_DISPATCH_QUEUE, GIT_LINK_DISPATCH_QUEUE, GIT_PURGE_QUEUE],
         capabilities: ['producer', 'worker', 'scheduler'],
         poolSize: 2,
         shutdownTimeoutMs: 8_000,

@@ -33,6 +33,8 @@ describe('appConfigSchema', () => {
       INTERNAL_TOKEN_AUDIENCE: 'integration-service',
       INTERNAL_TOKEN_ISSUER: 'integration-service',
       GIT_WEBHOOK_RECEIVERS: [],
+      GIT_LINK_EVENTS_ENABLED: false,
+      GIT_LINK_PURGE_ENABLED: false,
       INTERNAL_TOKEN_TRUSTED_ISSUERS: {
         'api-gateway': [
           {

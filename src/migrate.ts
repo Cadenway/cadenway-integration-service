@@ -9,7 +9,11 @@ import pg from 'pg';
 
 import { migrationConfigSchema } from './config/app-config.js';
 import type { MigrationConfig } from './config/app-config.js';
-import { GIT_DISPATCH_QUEUE } from './config/job-queues.js';
+import {
+  GIT_DISPATCH_QUEUE,
+  GIT_LINK_DISPATCH_QUEUE,
+  GIT_PURGE_QUEUE,
+} from './config/job-queues.js';
 
 // Entry point of the one-off migration container (`node dist/migrate.js`), which the GitOps agent of
 // cadenway-ops runs before it starts a new version. drizzle-kit is a development dependency and is
@@ -46,6 +50,6 @@ if (!existsSync(`${migrationsFolder}/meta/_journal.json`)) {
   await provisionJobs({
     connection: { connectionString: migration.MIGRATION_DATABASE_URL },
     appRole: 'integration_app',
-    queues: [GIT_DISPATCH_QUEUE],
+    queues: [GIT_DISPATCH_QUEUE, GIT_LINK_DISPATCH_QUEUE, GIT_PURGE_QUEUE],
   });
 }

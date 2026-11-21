@@ -32,6 +32,19 @@ const githubPullRequest = {
     body: null,
   },
 };
+const previousHead = 'a'.repeat(40);
+const observedHead = 'b'.repeat(40);
+const githubSync = {
+  ...githubPullRequest,
+  action: 'synchronize',
+  before: previousHead,
+  after: observedHead,
+  pull_request: {
+    ...githubPullRequest.pull_request,
+    head: { ...githubPullRequest.pull_request.head, sha: observedHead },
+    updated_at: '2026-11-08T16:18:44-04:00',
+  },
+};
 const gitlabProject = { id: 701, path_with_namespace: 'atelier-nord/auth' };
 const gitlabNewBranch = {
   object_kind: 'push',
@@ -59,6 +72,16 @@ const gitlabMergeRequest = {
     last_commit: { message: 'Prend en charge CAD-482' },
   },
 };
+const gitlabUpdate = {
+  ...gitlabMergeRequest,
+  object_attributes: {
+    ...gitlabMergeRequest.object_attributes,
+    action: 'update',
+    oldrev: previousHead,
+    last_commit: { id: observedHead, message: 'Prend en charge CAD-482' },
+    updated_at: '2026-11-08T20:18:44.125Z',
+  },
+};
 
 describe('readVerifiedGitDelivery', () => {
   it('recognizes the GitHub branch by signed create fields even if its repository was renamed', () => {
@@ -84,6 +107,53 @@ describe('readVerifiedGitDelivery', () => {
       taskKeys: ['CAD-482'],
       closingTaskKeys: [],
     });
+  });
+
+  it('keeps valid signed GitHub head metadata on a PR lifecycle fact', () => {
+    expect(
+      readVerifiedGitDelivery(githubBinding, {
+        ...githubPullRequest,
+        pull_request: githubSync.pull_request,
+      }),
+    ).toMatchObject({
+      trigger: 'pr_open',
+      taskKeys: ['CAD-482'],
+      head: { sha: observedHead, observedAtMs: Date.UTC(2026, 10, 8, 20, 18, 44) },
+    });
+  });
+
+  it('records a same-repository GitHub synchronize as a head-only observation', () => {
+    expect(readVerifiedGitDelivery(githubBinding, githubSync)).toEqual({
+      kind: 'actionable',
+      trigger: 'pr_head',
+      requestNumber: 214,
+      head: { sha: observedHead, observedAtMs: Date.UTC(2026, 10, 8, 20, 18, 44) },
+      taskKeys: [],
+      closingTaskKeys: [],
+    });
+  });
+
+  it.each([
+    { ...githubSync, before: '0'.repeat(40) },
+    { ...githubSync, before: observedHead },
+    { ...githubSync, after: previousHead },
+    {
+      ...githubSync,
+      pull_request: { ...githubSync.pull_request, updated_at: '2026-02-30T20:18:44Z' },
+    },
+    {
+      ...githubSync,
+      pull_request: { ...githubSync.pull_request, state: 'closed' },
+    },
+    {
+      ...githubSync,
+      pull_request: {
+        ...githubSync.pull_request,
+        head: { ...githubSync.pull_request.head, repo: { id: 502 } },
+      },
+    },
+  ])('ignores a GitHub synchronize with invalid revision evidence or repository', (body) => {
+    expect(readVerifiedGitDelivery(githubBinding, body)).toEqual({ kind: 'ignored' });
   });
 
   it('recognizes an opened GitHub PR while its merge flag is unavailable', () => {
@@ -116,12 +186,55 @@ describe('readVerifiedGitDelivery', () => {
     });
   });
 
+  it('recognizes a GitHub PR closed without a merge and drops closing intent', () => {
+    expect(
+      readVerifiedGitDelivery(githubBinding, {
+        ...githubPullRequest,
+        action: 'closed',
+        pull_request: {
+          ...githubPullRequest.pull_request,
+          state: 'closed',
+          merged: false,
+          body: 'Fixes CAD-473.',
+        },
+      }),
+    ).toEqual({
+      kind: 'actionable',
+      trigger: 'pr_closed',
+      requestNumber: 214,
+      taskKeys: ['CAD-482', 'CAD-473'],
+      closingTaskKeys: [],
+    });
+  });
+
+  it('preserves a reference-free GitHub closure for lookup by request number', () => {
+    expect(
+      readVerifiedGitDelivery(githubBinding, {
+        ...githubPullRequest,
+        action: 'closed',
+        pull_request: {
+          ...githubPullRequest.pull_request,
+          state: 'closed',
+          head: { ...githubPullRequest.pull_request.head, ref: 'feature/sso' },
+          title: 'Login improvements',
+        },
+      }),
+    ).toEqual({
+      kind: 'actionable',
+      trigger: 'pr_closed',
+      requestNumber: 214,
+      taskKeys: [],
+      closingTaskKeys: [],
+    });
+  });
+
   it.each([
     { ...githubPullRequest, action: 'synchronize' },
+    { ...githubPullRequest, action: 'closed' },
     {
       ...githubPullRequest,
       action: 'closed',
-      pull_request: { ...githubPullRequest.pull_request, state: 'closed' },
+      pull_request: { ...githubPullRequest.pull_request, state: 'closed', merged: null },
     },
     { ...githubPullRequest, number: 215 },
     { ...githubCreate, ref_type: 'tag' },
@@ -199,6 +312,91 @@ describe('readVerifiedGitDelivery', () => {
     });
   });
 
+  it('keeps valid signed GitLab head metadata on an MR lifecycle fact', () => {
+    expect(
+      readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabMergeRequest,
+        object_attributes: {
+          ...gitlabUpdate.object_attributes,
+          action: 'open',
+        },
+      }),
+    ).toMatchObject({
+      trigger: 'pr_open',
+      taskKeys: ['CAD-466', 'CAD-482'],
+      head: { sha: observedHead, observedAtMs: Date.UTC(2026, 10, 8, 20, 18, 44, 125) },
+    });
+  });
+
+  it('records a GitLab update with a changed revision as a head-only observation', () => {
+    expect(readVerifiedGitDelivery(gitlabBinding, gitlabUpdate)).toEqual({
+      kind: 'actionable',
+      trigger: 'pr_head',
+      requestNumber: 31,
+      head: { sha: observedHead, observedAtMs: Date.UTC(2026, 10, 8, 20, 18, 44, 125) },
+      taskKeys: [],
+      closingTaskKeys: [],
+    });
+  });
+
+  it.each([
+    { oldrev: undefined },
+    { oldrev: observedHead },
+    { last_commit: { id: '0'.repeat(40) } },
+    { updated_at: undefined },
+    { updated_at: '2026-11-08T20:18:44' },
+    { state: 'closed' },
+    { target_project_id: 702 },
+  ])('ignores a GitLab MR update without same-project code change evidence', (overrides) => {
+    expect(
+      readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabUpdate,
+        object_attributes: { ...gitlabUpdate.object_attributes, ...overrides },
+      }),
+    ).toEqual({ kind: 'ignored' });
+  });
+
+  it('recognizes a GitLab close in the same project and drops closing intent', () => {
+    expect(
+      readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabMergeRequest,
+        object_attributes: {
+          ...gitlabMergeRequest.object_attributes,
+          action: 'close',
+          state: 'closed',
+          description: 'Resolves CAD-473.',
+        },
+      }),
+    ).toEqual({
+      kind: 'actionable',
+      trigger: 'pr_closed',
+      requestNumber: 31,
+      taskKeys: ['CAD-466', 'CAD-473', 'CAD-482'],
+      closingTaskKeys: [],
+    });
+  });
+
+  it('preserves a reference-free GitLab closure for lookup by request number', () => {
+    expect(
+      readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabMergeRequest,
+        object_attributes: {
+          ...gitlabMergeRequest.object_attributes,
+          action: 'close',
+          state: 'closed',
+          title: 'Login improvements',
+          last_commit: { message: 'Update the login screen' },
+        },
+      }),
+    ).toEqual({
+      kind: 'actionable',
+      trigger: 'pr_closed',
+      requestNumber: 31,
+      taskKeys: [],
+      closingTaskKeys: [],
+    });
+  });
+
   it.each([
     { ...gitlabNewBranch, before: 'b'.repeat(40) },
     { ...gitlabNewBranch, after: '0'.repeat(40) },
@@ -213,7 +411,12 @@ describe('readVerifiedGitDelivery', () => {
         ...gitlabMergeRequest.object_attributes,
         action: 'close',
         state: 'closed',
+        target_project_id: 702,
       },
+    },
+    {
+      ...gitlabMergeRequest,
+      object_attributes: { ...gitlabMergeRequest.object_attributes, action: 'close' },
     },
     {
       ...gitlabMergeRequest,
@@ -227,7 +430,7 @@ describe('readVerifiedGitDelivery', () => {
       ...gitlabMergeRequest,
       object_attributes: { ...gitlabMergeRequest.object_attributes, target_project_id: 702 },
     },
-  ])('ignores GitLab updates, deletions, tags, closes and cross-project MRs', (body) => {
+  ])('ignores GitLab updates, deletions, tags and contradictory or cross-project MRs', (body) => {
     expect(readVerifiedGitDelivery(gitlabBinding, body)).toEqual({ kind: 'ignored' });
   });
 
@@ -260,6 +463,20 @@ describe('readVerifiedGitDelivery', () => {
         ...githubPullRequest,
         pull_request: {
           ...githubPullRequest.pull_request,
+          body: Array.from({ length: 21 }, (_, index) => `CAD-${String(index + 1)}`).join(' '),
+        },
+      }),
+    ).toEqual({ kind: 'ignored' });
+  });
+
+  it('ignores an oversized closure instead of requesting lookup by PR number', () => {
+    expect(
+      readVerifiedGitDelivery(githubBinding, {
+        ...githubPullRequest,
+        action: 'closed',
+        pull_request: {
+          ...githubPullRequest.pull_request,
+          state: 'closed',
           body: Array.from({ length: 21 }, (_, index) => `CAD-${String(index + 1)}`).join(' '),
         },
       }),

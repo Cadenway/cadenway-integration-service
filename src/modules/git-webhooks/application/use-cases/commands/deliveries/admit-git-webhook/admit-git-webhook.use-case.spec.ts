@@ -51,6 +51,8 @@ function setup(): {
   const transaction: GitDeliveryTransaction = {
     checkDeliveryId: vi.fn().mockResolvedValue('new'),
     findMapping: vi.fn().mockResolvedValue(mapping),
+    findRequestTaskKeys: vi.fn().mockResolvedValue([]),
+    findPendingRequestWork: vi.fn().mockResolvedValue([]),
     admit: vi.fn().mockResolvedValue('accepted'),
   };
   const work: GitDeliveryUnitOfWork = {
@@ -128,6 +130,132 @@ describe('AdmitGitWebhook', () => {
       deliveryId: input.deliveryId,
       digest: 'a'.repeat(64),
       work: null,
+    });
+  });
+
+  it('closes only existing linked tasks even after the task reference was removed', async () => {
+    const { command, transaction } = setup();
+    vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-483']);
+    const closed = {
+      ...payload,
+      action: 'closed',
+      pull_request: {
+        ...payload.pull_request,
+        state: 'closed',
+        head: { ref: 'revised-branch', repo: { id: 501 } },
+        title: 'No remaining reference',
+      },
+    };
+    await expect(
+      command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(closed)) }),
+    ).resolves.toEqual({ status: 'accepted' });
+    expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(mapping.binding, 214, undefined);
+    expect(transaction.admit).toHaveBeenCalledWith({
+      deliveryId: input.deliveryId,
+      digest: 'a'.repeat(64),
+      work: {
+        mapping,
+        fact: {
+          kind: 'actionable',
+          trigger: 'pr_closed',
+          requestNumber: 214,
+          taskKeys: ['CAD-483'],
+          closingTaskKeys: [],
+        },
+      },
+    });
+  });
+
+  it('admits checks only for the repository request and its matching observed head', async () => {
+    const { command, transaction } = setup();
+    const headSha = 'a'.repeat(40);
+    const when = '2026-11-08T20:18:44Z';
+    const body = {
+      action: 'completed',
+      installation: payload.installation,
+      repository: payload.repository,
+      check_suite: {
+        id: 277,
+        status: 'completed',
+        conclusion: 'success',
+        updated_at: when,
+        head_sha: headSha,
+        head_branch: payload.pull_request.head.ref,
+        pull_requests: [
+          {
+            ...payload.pull_request,
+            head: { ...payload.pull_request.head, sha: headSha },
+          },
+        ],
+      },
+    };
+    const rawBody = new TextEncoder().encode(JSON.stringify(body));
+    await expect(command.execute({ ...input, event: 'pull_request', rawBody })).resolves.toEqual({
+      status: 'invalid-delivery',
+    });
+    expect(transaction.findRequestTaskKeys).not.toHaveBeenCalled();
+    expect(transaction.admit).not.toHaveBeenCalled();
+
+    const checkInput = { ...input, event: 'check_suite', rawBody };
+    await expect(command.execute(checkInput)).resolves.toEqual({ status: 'accepted' });
+    expect(transaction.admit).toHaveBeenLastCalledWith({
+      deliveryId: input.deliveryId,
+      digest: 'a'.repeat(64),
+      work: null,
+    });
+
+    vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-484']);
+    await expect(command.execute(checkInput)).resolves.toEqual({ status: 'accepted' });
+    expect(transaction.findRequestTaskKeys).toHaveBeenLastCalledWith(mapping.binding, 214, headSha);
+    expect(transaction.admit).toHaveBeenLastCalledWith({
+      deliveryId: input.deliveryId,
+      digest: 'a'.repeat(64),
+      work: {
+        mapping,
+        fact: {
+          kind: 'actionable',
+          trigger: 'pr_checks',
+          requestNumber: 214,
+          taskKeys: ['CAD-484'],
+          closingTaskKeys: [],
+          checks: { requestNumber: 214, headSha, attemptId: 277, completedAtMs: Date.parse(when) },
+        },
+      },
+    });
+  });
+
+  it('retains closure for a preceding authorized opening that has not yet created the link', async () => {
+    const { command, transaction } = setup();
+    const id = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e10';
+    vi.mocked(transaction.findPendingRequestWork).mockResolvedValue([
+      { id, taskKeys: ['CAD-482'] },
+    ]);
+    const closed = {
+      ...payload,
+      action: 'closed',
+      pull_request: { ...payload.pull_request, state: 'closed' },
+    };
+    await expect(
+      command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(closed)) }),
+    ).resolves.toEqual({ status: 'accepted' });
+    expect(transaction.findPendingRequestWork).toHaveBeenCalledWith(mapping, 214, [
+      'pr_open',
+      'pr_merged',
+    ]);
+    expect(transaction.admit).toHaveBeenCalledWith({
+      deliveryId: input.deliveryId,
+      digest: 'a'.repeat(64),
+      work: {
+        mapping,
+        fact: {
+          kind: 'actionable',
+          trigger: 'pr_closed',
+          requestNumber: 214,
+          taskKeys: ['CAD-482'],
+          closingTaskKeys: [],
+        },
+        prerequisiteIds: [id],
+      },
     });
   });
 

@@ -2,11 +2,13 @@ import type { GitReceiverBinding } from '../../value-objects/deliveries/git-rece
 import type { VerifiedGitDelivery } from '../../value-objects/deliveries/verified-git-delivery.value-object.js';
 
 type JsonObject = Readonly<Record<string, unknown>>;
+type GitRequestHead = Extract<VerifiedGitDelivery, { trigger: 'pr_head' }>['head'];
 type GitAutomation =
   | { readonly trigger: 'branch'; readonly branch: string }
   | {
-      readonly trigger: 'pr_open' | 'pr_merged';
+      readonly trigger: 'pr_open' | 'pr_merged' | 'pr_closed';
       readonly requestNumber: number;
+      readonly head?: GitRequestHead;
     };
 
 // Reject an oversized action as a whole before it can fan out to Task.
@@ -16,6 +18,8 @@ const MAX_GITLAB_PUSH_COMMITS = 20;
 const BRANCH_REF_PREFIX = 'refs/heads/';
 const ZERO_REVISION = /^(?:0{40}|0{64})$/u;
 const COMMIT_REVISION = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const PROVIDER_TIMESTAMP =
+  /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/u;
 const CLOSING_VERBS = new Set(['fixes', 'closes', 'resolves']);
 // Mirrors the TaskKey shape in cadenway-api-contracts/components/task.yaml.
 const TASK_REFERENCE =
@@ -24,10 +28,11 @@ const TASK_REFERENCE =
 /**
  * Reads automation facts from a JSON body already verified with the receiver's signing key.
  *
- * The Development panel (App.dc.html:4328–4360) maps a new branch, open PR or MR, and merged PR or MR
- * to distinct triggers, with task references in branches, request text or commits. Require the
- * source and destination request repositories to belong to the receiver before using any reference.
- * A merged request retains explicit closing verbs as candidate intent (cw-integration-domain).
+ * The Development panel (App.dc.html:4328–4360) links task references in branches, request text
+ * or commits. Require both request repositories to belong to the receiver before using references.
+ * The Integration AsyncAPI distinguishes a close without merge from a merge. Only a merge retains
+ * explicit closing verbs as task status intent (cw-integration-domain). A source revision
+ * change supplies an observation for existing links without discovering tasks from the text.
  * The caller owns replay protection, space authorization and the status transition.
  */
 export function readVerifiedGitDelivery(
@@ -84,23 +89,30 @@ function readGitHubDelivery(delivery: JsonObject, repositoryId: number): Verifie
     return { kind: 'ignored' };
   }
 
-  // GitHub reports a merge as a closed pull_request with the merged flag set.
+  const currentHead = readRequestHead(head?.sha, request.updated_at);
+  const open = request.state === 'open' && (request.merged === false || request.merged === null);
+  if (delivery.action === 'synchronize') {
+    // GitHub's synchronize event includes the old and new revision of the PR head.
+    if (!open || delivery.after !== currentHead?.sha) return { kind: 'ignored' };
+    return observeHeadChange(requestNumber, currentHead, delivery.before);
+  }
+
+  // GitHub reports both kinds of closure through the closed action and distinguishes them by the merged flag.
   // https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request
-  const opened =
-    delivery.action === 'opened' &&
-    request.state === 'open' &&
-    (request.merged === false || request.merged === null);
-  const merged =
-    delivery.action === 'closed' && request.state === 'closed' && request.merged === true;
-  if (!opened && !merged) {
+  const opened = delivery.action === 'opened' && open;
+  const closed =
+    delivery.action === 'closed' &&
+    request.state === 'closed' &&
+    typeof request.merged === 'boolean';
+  if (!opened && !closed) {
     return { kind: 'ignored' };
   }
 
-  return readTaskReferences({ trigger: opened ? 'pr_open' : 'pr_merged', requestNumber }, [
-    head?.ref,
-    request.title,
-    request.body,
-  ]);
+  const trigger = opened ? 'pr_open' : request.merged === true ? 'pr_merged' : 'pr_closed';
+  return readTaskReferences(
+    { trigger, requestNumber, ...(currentHead === undefined ? {} : { head: currentHead }) },
+    [head?.ref, request.title, request.body],
+  );
 }
 
 function readGitLabDelivery(delivery: JsonObject, repositoryId: number): VerifiedGitDelivery {
@@ -113,10 +125,8 @@ function readGitLabDelivery(delivery: JsonObject, repositoryId: number): Verifie
       ref.length === BRANCH_REF_PREFIX.length ||
       typeof before !== 'string' ||
       !ZERO_REVISION.test(before) ||
-      typeof after !== 'string' ||
+      !isCommitRevision(after) ||
       after.length !== before.length ||
-      !COMMIT_REVISION.test(after) ||
-      ZERO_REVISION.test(after) ||
       !Array.isArray(commits) ||
       commits.length > MAX_GITLAB_PUSH_COMMITS
     ) {
@@ -144,18 +154,62 @@ function readGitLabDelivery(delivery: JsonObject, repositoryId: number): Verifie
     return { kind: 'ignored' };
   }
 
+  const lastCommit = asObject(request.last_commit);
+  const currentHead = readRequestHead(lastCommit?.id, request.updated_at);
+  if (request.action === 'update' && request.state === 'opened') {
+    // GitLab includes oldrev on MR updates caused by actual changes to source code.
+    return observeHeadChange(requestNumber, currentHead, request.oldrev);
+  }
+
   const opened = request.action === 'open' && request.state === 'opened';
   const merged = request.action === 'merge' && request.state === 'merged';
-  if (!opened && !merged) {
+  const closed = request.action === 'close' && request.state === 'closed';
+  if (!opened && !merged && !closed) {
     return { kind: 'ignored' };
   }
 
-  return readTaskReferences({ trigger: opened ? 'pr_open' : 'pr_merged', requestNumber }, [
-    request.source_branch,
-    request.title,
-    request.description,
-    asObject(request.last_commit)?.message,
-  ]);
+  const trigger = opened ? 'pr_open' : merged ? 'pr_merged' : 'pr_closed';
+  return readTaskReferences(
+    { trigger, requestNumber, ...(currentHead === undefined ? {} : { head: currentHead }) },
+    [request.source_branch, request.title, request.description, lastCommit?.message],
+  );
+}
+
+function readRequestHead(sha: unknown, updatedAt: unknown): GitRequestHead | undefined {
+  if (
+    !isCommitRevision(sha) ||
+    typeof updatedAt !== 'string' ||
+    !PROVIDER_TIMESTAMP.test(updatedAt)
+  ) {
+    return undefined;
+  }
+
+  const observedAtMs = Date.parse(updatedAt);
+  if (!Number.isSafeInteger(observedAtMs) || observedAtMs < 1) return undefined;
+
+  // Reject dates the runtime silently rolls into the next calendar month.
+  const localTime = updatedAt.slice(0, 19);
+  if (!new Date(`${localTime}Z`).toISOString().startsWith(localTime)) return undefined;
+
+  return { sha, observedAtMs };
+}
+
+function observeHeadChange(
+  requestNumber: number,
+  head: GitRequestHead | undefined,
+  previousSha: unknown,
+): VerifiedGitDelivery {
+  if (head === undefined || !isCommitRevision(previousSha) || previousSha === head.sha) {
+    return { kind: 'ignored' };
+  }
+  return {
+    kind: 'actionable',
+    trigger: 'pr_head',
+    requestNumber,
+    head,
+    taskKeys: [],
+    closingTaskKeys: [],
+  };
 }
 
 function readTaskReferences(
@@ -180,7 +234,7 @@ function readTaskReferences(
     }
   }
 
-  if (taskKeys.size === 0) return { kind: 'ignored' };
+  if (taskKeys.size === 0 && automation.trigger !== 'pr_closed') return { kind: 'ignored' };
 
   return {
     kind: 'actionable',
@@ -202,4 +256,8 @@ function isProviderId(value: unknown): value is number {
 
 function matchesId(value: unknown, expected: number): boolean {
   return isProviderId(value) && value === expected;
+}
+
+function isCommitRevision(value: unknown): value is string {
+  return typeof value === 'string' && COMMIT_REVISION.test(value) && !ZERO_REVISION.test(value);
 }

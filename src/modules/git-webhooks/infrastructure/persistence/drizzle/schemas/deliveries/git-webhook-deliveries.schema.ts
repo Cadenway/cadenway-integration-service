@@ -3,6 +3,7 @@ import {
   check,
   bigint,
   foreignKey,
+  index,
   jsonb,
   pgPolicy,
   pgTable,
@@ -32,6 +33,8 @@ export const gitWebhookDeliveries = pgTable(
     work: jsonb('work').$type<{
       readonly mapping: GitDeliveryMapping;
       readonly fact: Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
+      readonly prerequisiteIds?: readonly string[];
+      readonly recordLink?: true;
     } | null>(),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
@@ -55,6 +58,14 @@ export const gitWebhookDeliveries = pgTable(
     uniqueIndex('git_webhook_deliveries_github_digest_unique')
       .on(table.organizationId, table.receiverId, table.digest)
       .where(sql`${table.provider} = 'github'`),
+    index('git_webhook_deliveries_request_predecessors_index').on(
+      table.organizationId,
+      table.receiverId,
+      table.provider,
+      sql`(${table.work} -> 'fact' ->> 'requestNumber')`,
+      table.createdAt,
+      table.id,
+    ),
     check('git_webhook_deliveries_provider_check', sql`${table.provider} in ('github', 'gitlab')`),
     check(
       'git_webhook_deliveries_receiver_revision_check',
