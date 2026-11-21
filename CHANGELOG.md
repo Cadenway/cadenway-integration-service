@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/Cadenway/cadenway-integration-service/compare/v0.3.0...v0.4.0) (2026-11-21)
+
+
+### Features
+
+* **git:** admit and dispatch verified provider webhooks ([#27](https://github.com/Cadenway/cadenway-integration-service/issues/27)) ([955001d](https://github.com/Cadenway/cadenway-integration-service/commit/955001d7c4775ad14eaf49338742a931c0a3ede8))
+* **integration:** publish verified Git link facts ([#29](https://github.com/Cadenway/cadenway-integration-service/issues/29)) ([bf206b4](https://github.com/Cadenway/cadenway-integration-service/commit/bf206b4d2abb788514a7f49d6a86d4c0dad7eeca))
+
 ## [0.3.0](https://github.com/Cadenway/cadenway-integration-service/compare/v0.2.0...v0.3.0) (2026-11-16)
 
 
