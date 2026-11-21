@@ -234,10 +234,13 @@ describe('integration-service wiring', () => {
     const body: Buffer[] = [];
     incoming.on('data', (chunk: Buffer) => body.push(chunk));
     incoming.on('end', () => {
+      const command = JSON.parse(Buffer.concat(body).toString('utf8')) as {
+        readonly status?: unknown;
+      };
       taskCommands.push({
         path: incoming.url,
         key: incoming.headers['idempotency-key'],
-        body: JSON.parse(Buffer.concat(body).toString('utf8')) as unknown,
+        body: command,
       });
       outgoing.writeHead(200, {
         'Content-Type': 'application/json',
@@ -245,7 +248,7 @@ describe('integration-service wiring', () => {
       });
       outgoing.end(
         JSON.stringify({
-          disposition: 'applied',
+          disposition: command.status === null ? 'no_op' : 'applied',
           taskId: gitTaskIdsByPath.get(incoming.url ?? '') ?? gitTaskId,
           listId: gitListId,
           spaceId: gitSpaceId,
@@ -420,29 +423,26 @@ describe('integration-service wiring', () => {
       organizationId: null,
     });
     const repository = { id: 81 };
-    const body = `\n${JSON.stringify(
-      {
-        repository,
-        installation: { id: 41 },
-        action: 'opened',
+    const payload = {
+      repository,
+      installation: { id: 41 },
+      action: 'opened',
+      number: 214,
+      pull_request: {
         number: 214,
-        pull_request: {
-          number: 214,
-          state: 'open',
-          merged: false,
-          head: { ref: 'cad-482-ecran-connexion-sso', repo: repository },
-          base: { ref: 'main', repo: repository },
-          title: 'Écran de connexion (CAD-482)',
-          body: null,
-        },
+        state: 'open',
+        merged: false,
+        head: { ref: 'cad-482-ecran-connexion-sso', repo: repository },
+        base: { ref: 'main', repo: repository },
+        title: 'Écran de connexion (CAD-482)',
+        body: null,
       },
-      null,
-      2,
-    )}\n`;
+    };
+    const body = `\n${JSON.stringify(payload, null, 2)}\n`;
     const digest = createHash('sha256').update(body).digest('hex');
     const signature = `sha256=${createHmac('sha256', gitFixtureKey).update(body).digest('hex')}`;
     const path = `/internal/v1/webhooks/github?bindingId=${gitReceiverId}`;
-    const deliver = (authorization: string, key = signature) =>
+    const deliver = (authorization: string, key = signature, raw = body) =>
       request(service().getHttpServer())
         .post(path)
         .set('Authorization', `Bearer ${authorization}`)
@@ -450,7 +450,7 @@ describe('integration-service wiring', () => {
         .set('X-GitHub-Delivery', randomUUID())
         .set('X-GitHub-Event', 'pull_request')
         .set('X-Hub-Signature-256', key)
-        .send(body);
+        .send(raw);
 
     const results = await Promise.all([deliver(gatewayToken), deliver(gatewayToken)]);
     expect(results.map((result) => result.status)).toEqual([204, 204]);
@@ -533,6 +533,38 @@ describe('integration-service wiring', () => {
             },
           },
         ]);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+
+    const closed = JSON.stringify({
+      ...payload,
+      action: 'closed',
+      pull_request: { ...payload.pull_request, state: 'closed' },
+    });
+    const closingSignature = `sha256=${createHmac('sha256', gitFixtureKey).update(closed).digest('hex')}`;
+    await deliver(gatewayToken, closingSignature, closed).expect(204);
+    await vi.waitFor(
+      async () => {
+        const closedLink = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+          tenant.run(({ client }) =>
+            client.query(
+              `select link.status, link.version::int, event.event_name
+             from git_links link join outbox_events event
+               on event.organization_id = link.organization_id
+               and event.payload->>'gitLinkId' = link.id::text
+             where link.task_key = 'CAD-482' and event.event_name = 'git.pr-closed.v1'`,
+            ),
+          ),
+        );
+        expect(closedLink.rows).toEqual([
+          { status: 'closed', version: 2, event_name: 'git.pr-closed.v1' },
+        ]);
+        expect(
+          taskCommands.findLast(
+            ({ path }) => path === '/internal/v1/tasks/CAD-482/git-status-actions',
+          )?.body,
+        ).toMatchObject({ status: null });
       },
       { timeout: 15_000, interval: 100 },
     );

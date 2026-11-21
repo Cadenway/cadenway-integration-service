@@ -18,6 +18,7 @@ const target = { kind: 'actionable', taskKeys: ['CAD-482'], closingTaskKeys: [] 
 const branch = { ...target, trigger: 'branch', branch: 'feature/CAD-482' } as const;
 const opened = { ...target, trigger: 'pr_open', requestNumber: 214 } as const;
 const merged = { ...target, trigger: 'pr_merged', requestNumber: 214 } as const;
+const closed = { ...target, trigger: 'pr_closed', requestNumber: 214 } as const;
 
 describe('Git link decisions', () => {
   it('retains the exact case of a branch reference and distinguishes branch and request identities', () => {
@@ -36,6 +37,7 @@ describe('Git link decisions', () => {
 
   it('shares one request identity across open and merge in the same repository and task', () => {
     expect(gitLinkIdentity(scope, opened)).toEqual(gitLinkIdentity(scope, merged));
+    expect(gitLinkIdentity(scope, opened)).toEqual(gitLinkIdentity(scope, closed));
     const otherScopes = [
       { ...scope, organizationId: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e03' },
       { ...scope, taskId: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e03' },
@@ -91,6 +93,41 @@ describe('Git link decisions', () => {
     });
     if (result === null) throw new Error('Expected an initial terminal fact.');
     expect(decideGitLinkChange(identity, result.state, opened)).toBeNull();
+  });
+
+  it('records a close once and ignores a late open both before and after a verified merge', () => {
+    const identity = gitLinkIdentity(scope, opened);
+    const initial = decideGitLinkChange(identity, null, opened);
+    if (initial === null) throw new Error('Expected an initial pull request fact.');
+
+    const closure = decideGitLinkChange(identity, initial.state, closed);
+    expect(closure).toEqual({
+      state: { identity, status: 'closed', version: 2 },
+      event: { type: 'pull-request-closed', version: 2 },
+    });
+    if (closure === null) throw new Error('Expected a pull request close fact.');
+    expect(decideGitLinkChange(identity, closure.state, closed)).toBeNull();
+    expect(decideGitLinkChange(identity, closure.state, opened)).toBeNull();
+
+    const terminal = decideGitLinkChange(identity, closure.state, merged);
+    expect(terminal).toEqual({
+      state: { identity, status: 'merged', version: 3 },
+      event: { type: 'pull-request-merged', version: 3 },
+    });
+    if (terminal === null) throw new Error('Expected a pull request merge fact.');
+    expect(decideGitLinkChange(identity, terminal.state, opened)).toBeNull();
+    expect(decideGitLinkChange(identity, terminal.state, closed)).toBeNull();
+  });
+
+  it('records a close that arrives before the corresponding open as the initial version', () => {
+    const identity = gitLinkIdentity(scope, closed);
+    const closure = decideGitLinkChange(identity, null, closed);
+    expect(closure).toEqual({
+      state: { identity, status: 'closed', version: 1 },
+      event: { type: 'pull-request-closed', version: 1 },
+    });
+    if (closure === null) throw new Error('Expected an initial pull request close fact.');
+    expect(decideGitLinkChange(identity, closure.state, opened)).toBeNull();
   });
 
   it('refuses an unrelated existing link or a delivery for a different provider object', () => {

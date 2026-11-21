@@ -116,12 +116,34 @@ describe('readVerifiedGitDelivery', () => {
     });
   });
 
+  it('recognizes a GitHub PR closed without a merge and drops closing intent', () => {
+    expect(
+      readVerifiedGitDelivery(githubBinding, {
+        ...githubPullRequest,
+        action: 'closed',
+        pull_request: {
+          ...githubPullRequest.pull_request,
+          state: 'closed',
+          merged: false,
+          body: 'Fixes CAD-473.',
+        },
+      }),
+    ).toEqual({
+      kind: 'actionable',
+      trigger: 'pr_closed',
+      requestNumber: 214,
+      taskKeys: ['CAD-482', 'CAD-473'],
+      closingTaskKeys: [],
+    });
+  });
+
   it.each([
     { ...githubPullRequest, action: 'synchronize' },
+    { ...githubPullRequest, action: 'closed' },
     {
       ...githubPullRequest,
       action: 'closed',
-      pull_request: { ...githubPullRequest.pull_request, state: 'closed' },
+      pull_request: { ...githubPullRequest.pull_request, state: 'closed', merged: null },
     },
     { ...githubPullRequest, number: 215 },
     { ...githubCreate, ref_type: 'tag' },
@@ -199,6 +221,26 @@ describe('readVerifiedGitDelivery', () => {
     });
   });
 
+  it('recognizes a GitLab close in the same project and drops closing intent', () => {
+    expect(
+      readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabMergeRequest,
+        object_attributes: {
+          ...gitlabMergeRequest.object_attributes,
+          action: 'close',
+          state: 'closed',
+          description: 'Resolves CAD-473.',
+        },
+      }),
+    ).toEqual({
+      kind: 'actionable',
+      trigger: 'pr_closed',
+      requestNumber: 31,
+      taskKeys: ['CAD-466', 'CAD-473', 'CAD-482'],
+      closingTaskKeys: [],
+    });
+  });
+
   it.each([
     { ...gitlabNewBranch, before: 'b'.repeat(40) },
     { ...gitlabNewBranch, after: '0'.repeat(40) },
@@ -213,7 +255,12 @@ describe('readVerifiedGitDelivery', () => {
         ...gitlabMergeRequest.object_attributes,
         action: 'close',
         state: 'closed',
+        target_project_id: 702,
       },
+    },
+    {
+      ...gitlabMergeRequest,
+      object_attributes: { ...gitlabMergeRequest.object_attributes, action: 'close' },
     },
     {
       ...gitlabMergeRequest,
@@ -227,7 +274,7 @@ describe('readVerifiedGitDelivery', () => {
       ...gitlabMergeRequest,
       object_attributes: { ...gitlabMergeRequest.object_attributes, target_project_id: 702 },
     },
-  ])('ignores GitLab updates, deletions, tags, closes and cross-project MRs', (body) => {
+  ])('ignores GitLab updates, deletions, tags and contradictory or cross-project MRs', (body) => {
     expect(readVerifiedGitDelivery(gitlabBinding, body)).toEqual({ kind: 'ignored' });
   });
 

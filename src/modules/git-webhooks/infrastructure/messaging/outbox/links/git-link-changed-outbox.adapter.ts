@@ -1,5 +1,6 @@
 import {
   GIT_BRANCH_CREATED_V1,
+  GIT_PR_CLOSED_V1,
   GIT_PR_MERGED_V1,
   GIT_PR_OPENED_V1,
   eventSchemas,
@@ -13,6 +14,7 @@ import type { GitLinkChanged } from '../../../../domain/events/links/git-link-ch
 const pullRequestEventName = {
   'pull-request-opened': GIT_PR_OPENED_V1,
   'pull-request-merged': GIT_PR_MERGED_V1,
+  'pull-request-closed': GIT_PR_CLOSED_V1,
 } as const satisfies Record<
   Exclude<GitLinkChanged['type'], 'branch-created'>,
   keyof typeof eventSchemas

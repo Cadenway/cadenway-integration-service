@@ -16,7 +16,7 @@ CREATE TABLE "git_links" (
 	CONSTRAINT "git_links_task_key_check" CHECK ("git_links"."task_key" ~ '^[A-Z]{2,5}-[1-9][0-9]{0,8}$'),
 	CONSTRAINT "git_links_identity_hash_check" CHECK ("git_links"."identity_hash" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "git_links_identity_check" CHECK (jsonb_typeof("git_links"."identity") = 'object'),
-	CONSTRAINT "git_links_status_check" CHECK ("git_links"."status" in ('created', 'open', 'merged')),
+	CONSTRAINT "git_links_status_check" CHECK ("git_links"."status" in ('created', 'open', 'merged', 'closed')),
 	CONSTRAINT "git_links_version_check" CHECK ("git_links"."version" between 1 and 9007199254740991)
 );
 --> statement-breakpoint

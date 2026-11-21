@@ -10,5 +10,5 @@ export type VerifiedGitDelivery =
       readonly closingTaskKeys: readonly string[];
     } & (
       | { readonly trigger: 'branch'; readonly branch: string }
-      | { readonly trigger: 'pr_open' | 'pr_merged'; readonly requestNumber: number }
+      | { readonly trigger: 'pr_open' | 'pr_merged' | 'pr_closed'; readonly requestNumber: number }
     ));

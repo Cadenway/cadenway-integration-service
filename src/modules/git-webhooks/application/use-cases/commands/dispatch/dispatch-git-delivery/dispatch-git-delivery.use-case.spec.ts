@@ -61,12 +61,17 @@ describe('DispatchGitDelivery', () => {
   it.each([
     ['branch', 'progress'],
     ['pr_merged', 'done'],
+    ['pr_closed', null],
   ] as const)('maps the %s default to %s', async (trigger, status) => {
     const { command, work, task } = setup();
     const fact =
       trigger === 'branch'
         ? { ...claim.fact, trigger, branch: 'cad-482-connexion' }
-        : { ...claim.fact, trigger, closingTaskKeys: [input.taskKey] };
+        : {
+            ...claim.fact,
+            trigger,
+            closingTaskKeys: trigger === 'pr_merged' ? [input.taskKey] : [],
+          };
     const current = { ...claim, fact } as GitDispatchClaim;
     vi.mocked(work.prepare).mockResolvedValue({ status: 'ready', claim: current });
     await command.execute(input);

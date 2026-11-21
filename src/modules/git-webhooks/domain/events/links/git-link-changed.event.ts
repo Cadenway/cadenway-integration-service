@@ -5,7 +5,8 @@
 export interface GitLinkChanged {
   // #region Properties
   /** Name of the material change and the version assigned to it. */
-  readonly type: 'branch-created' | 'pull-request-opened' | 'pull-request-merged';
+  readonly type:
+    'branch-created' | 'pull-request-opened' | 'pull-request-closed' | 'pull-request-merged';
   readonly version: number;
   // #endregion
 }

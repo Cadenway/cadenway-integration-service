@@ -10,6 +10,7 @@ type LinkReference = Extract<VerifiedGitDelivery, { kind: 'actionable' }>;
 const outcomes = {
   branch: { status: 'created', type: 'branch-created' },
   pr_open: { status: 'open', type: 'pull-request-opened' },
+  pr_closed: { status: 'closed', type: 'pull-request-closed' },
   pr_merged: { status: 'merged', type: 'pull-request-merged' },
 } as const;
 
@@ -30,8 +31,9 @@ export function gitLinkIdentity(scope: LinkScope, reference: LinkReference): Git
 }
 
 /**
- * Applies the Integration AsyncAPI link ordering rule. Replays and older open deliveries
- * after merge produce no fact or version change. The caller commits state and fact together.
+ * Applies the Integration AsyncAPI link ordering rule. A verified merge supersedes a close
+ * without merge. Replays and deliveries that would reverse either closure produce no fact
+ * or version change. The caller commits state and fact together.
  */
 export function decideGitLinkChange(
   identity: GitLinkIdentity,
@@ -49,7 +51,13 @@ export function decideGitLinkChange(
     ) {
       throw new InvalidGitLinkError();
     }
-    if (current.status === status || current.status === 'merged') return null;
+    if (
+      current.status === status ||
+      current.status === 'merged' ||
+      (current.status === 'closed' && status === 'open')
+    ) {
+      return null;
+    }
   }
 
   const version = (current?.version ?? 0) + 1;

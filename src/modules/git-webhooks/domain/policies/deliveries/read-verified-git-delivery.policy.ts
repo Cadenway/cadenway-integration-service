@@ -5,7 +5,7 @@ type JsonObject = Readonly<Record<string, unknown>>;
 type GitAutomation =
   | { readonly trigger: 'branch'; readonly branch: string }
   | {
-      readonly trigger: 'pr_open' | 'pr_merged';
+      readonly trigger: 'pr_open' | 'pr_merged' | 'pr_closed';
       readonly requestNumber: number;
     };
 
@@ -24,11 +24,11 @@ const TASK_REFERENCE =
 /**
  * Reads automation facts from a JSON body already verified with the receiver's signing key.
  *
- * The Development panel (App.dc.html:4328–4360) maps a new branch, open PR or MR, and merged PR or MR
- * to distinct triggers, with task references in branches, request text or commits. Require the
- * source and destination request repositories to belong to the receiver before using any reference.
- * A merged request retains explicit closing verbs as candidate intent (cw-integration-domain).
- * The caller owns replay protection, space authorization and the status transition.
+ * The Development panel (App.dc.html:4328–4360) links task references in branches, request text
+ * or commits. Require both request repositories to belong to the receiver before using references.
+ * The Integration AsyncAPI distinguishes a close without merge from a merge. Only a merge retains
+ * explicit closing verbs as task status intent (cw-integration-domain). The caller owns replay
+ * protection, space authorization and the status transition.
  */
 export function readVerifiedGitDelivery(
   binding: GitReceiverBinding,
@@ -84,23 +84,22 @@ function readGitHubDelivery(delivery: JsonObject, repositoryId: number): Verifie
     return { kind: 'ignored' };
   }
 
-  // GitHub reports a merge as a closed pull_request with the merged flag set.
+  // GitHub reports both kinds of closure through the closed action and distinguishes them by the merged flag.
   // https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request
   const opened =
     delivery.action === 'opened' &&
     request.state === 'open' &&
     (request.merged === false || request.merged === null);
-  const merged =
-    delivery.action === 'closed' && request.state === 'closed' && request.merged === true;
-  if (!opened && !merged) {
+  const closed =
+    delivery.action === 'closed' &&
+    request.state === 'closed' &&
+    typeof request.merged === 'boolean';
+  if (!opened && !closed) {
     return { kind: 'ignored' };
   }
 
-  return readTaskReferences({ trigger: opened ? 'pr_open' : 'pr_merged', requestNumber }, [
-    head?.ref,
-    request.title,
-    request.body,
-  ]);
+  const trigger = opened ? 'pr_open' : request.merged === true ? 'pr_merged' : 'pr_closed';
+  return readTaskReferences({ trigger, requestNumber }, [head?.ref, request.title, request.body]);
 }
 
 function readGitLabDelivery(delivery: JsonObject, repositoryId: number): VerifiedGitDelivery {
@@ -146,11 +145,13 @@ function readGitLabDelivery(delivery: JsonObject, repositoryId: number): Verifie
 
   const opened = request.action === 'open' && request.state === 'opened';
   const merged = request.action === 'merge' && request.state === 'merged';
-  if (!opened && !merged) {
+  const closed = request.action === 'close' && request.state === 'closed';
+  if (!opened && !merged && !closed) {
     return { kind: 'ignored' };
   }
 
-  return readTaskReferences({ trigger: opened ? 'pr_open' : 'pr_merged', requestNumber }, [
+  const trigger = opened ? 'pr_open' : merged ? 'pr_merged' : 'pr_closed';
+  return readTaskReferences({ trigger, requestNumber }, [
     request.source_branch,
     request.title,
     request.description,

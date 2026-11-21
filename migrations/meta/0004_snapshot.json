@@ -1057,7 +1057,7 @@
         },
         "git_links_status_check": {
           "name": "git_links_status_check",
-          "value": "\"git_links\".\"status\" in ('created', 'open', 'merged')"
+          "value": "\"git_links\".\"status\" in ('created', 'open', 'merged', 'closed')"
         },
         "git_links_version_check": {
           "name": "git_links_version_check",

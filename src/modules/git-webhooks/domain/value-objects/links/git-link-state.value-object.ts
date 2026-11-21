@@ -5,7 +5,7 @@ export interface GitLinkState {
   // #region Properties
   /** Persists the stable identity together with the current state and version. */
   readonly identity: GitLinkIdentity;
-  readonly status: 'created' | 'open' | 'merged';
+  readonly status: 'created' | 'open' | 'closed' | 'merged';
   readonly version: number;
   // #endregion
 }

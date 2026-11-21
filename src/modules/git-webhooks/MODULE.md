@@ -35,6 +35,7 @@ receiver has a deployment-supplied signing credential and a matching enabled dat
 - `git.branch-created.v1`
 - `git.pr-opened.v1`
 - `git.pr-merged.v1`
+- `git.pr-closed.v1`
 
 Each fact carries the canonical task key, authorized placement and stable link ID and version. The
 provider content stays in Integration.
@@ -62,7 +63,8 @@ consumer and Task exposes its signed Git command.
   `v1` signature for the configured `whsec_` key authenticates the payload.
 - Up to 20 distinct task references are admitted together. Branch creation proposes `progress`,
   opening a pull request proposes `review`, and a merged pull request proposes `done` for keys with
-  a closing verb. Other merge references only resolve authorized placement. Task owns current
+  a closing verb. Other merge references and closing a request only resolve authorized placement.
+  Task owns current
   visibility, the mapping author's authority, status progression and activity.
 - The worker uses the same Task command ID across its five attempts. It sends no action after the
   one-hour command window. Exhausted attempts go to a dead-letter queue with fixed diagnostics.
