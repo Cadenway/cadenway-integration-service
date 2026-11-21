@@ -35,6 +35,7 @@ services:
       TASK_SERVICE_URL: ${TASK_SERVICE_URL}
       GIT_WEBHOOK_RECEIVERS: ${GIT_WEBHOOK_RECEIVERS:-[]}
       GIT_LINK_EVENTS_ENABLED: ${GIT_LINK_EVENTS_ENABLED:-false}
+      GIT_LINK_PURGE_ENABLED: ${GIT_LINK_PURGE_ENABLED:-false}
     networks:
       - internal
     healthcheck:

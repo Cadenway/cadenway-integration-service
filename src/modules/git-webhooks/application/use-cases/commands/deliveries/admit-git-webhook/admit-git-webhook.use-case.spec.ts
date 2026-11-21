@@ -238,7 +238,7 @@ describe('AdmitGitWebhook', () => {
     await expect(
       command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(closed)) }),
     ).resolves.toEqual({ status: 'accepted' });
-    expect(transaction.findPendingRequestWork).toHaveBeenCalledWith(mapping.binding, 214, [
+    expect(transaction.findPendingRequestWork).toHaveBeenCalledWith(mapping, 214, [
       'pr_open',
       'pr_merged',
     ]);

@@ -23,7 +23,7 @@ export interface GitDeliveryTransaction {
 
   /** Finds earlier admitted work that can establish an authorized request link. */
   readonly findPendingRequestWork: (
-    binding: GitRepositoryIdentity,
+    mapping: GitDeliveryMapping,
     requestNumber: number,
     triggers: readonly ('pr_open' | 'pr_head' | 'pr_merged')[],
   ) => Promise<readonly { readonly id: string; readonly taskKeys: readonly string[] }[] | null>;

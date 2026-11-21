@@ -1,7 +1,7 @@
 import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/database';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
-import type { GitReceiverBinding } from '../../../../../domain/value-objects/deliveries/git-receiver-binding.value-object.js';
+import type { GitDeliveryMapping } from '../../../../../application/models/deliveries/git-delivery-mapping.model.js';
 import { gitWebhookDeliveries } from '../../schemas/deliveries/git-webhook-deliveries.schema.js';
 import { gitDispatchClaims } from '../../schemas/dispatch/git-dispatch-claims.schema.js';
 
@@ -14,7 +14,8 @@ export class DrizzleGitRequestPredecessorsRepository {
     input: {
       readonly organizationId: string;
       readonly receiverId: string;
-      readonly binding: GitReceiverBinding;
+      readonly receiverRevision: number;
+      readonly mapping: GitDeliveryMapping;
       readonly requestNumber: number;
       readonly triggers: readonly ('pr_open' | 'pr_head' | 'pr_merged')[];
     },
@@ -24,12 +25,18 @@ export class DrizzleGitRequestPredecessorsRepository {
     }
     if (input.triggers.length === 0) return [];
     const work = gitWebhookDeliveries.work;
+    const { binding } = input.mapping;
     const predicates = [
       eq(gitWebhookDeliveries.organizationId, input.organizationId),
       eq(gitWebhookDeliveries.receiverId, input.receiverId),
-      eq(gitWebhookDeliveries.provider, input.binding.provider),
-      sql`${work} -> 'mapping' -> 'binding' ->> 'provider' = ${input.binding.provider}`,
-      sql`${work} -> 'mapping' -> 'binding' ->> 'repositoryId' = ${String(input.binding.repositoryId)}`,
+      eq(gitWebhookDeliveries.receiverRevision, input.receiverRevision),
+      eq(gitWebhookDeliveries.provider, binding.provider),
+      sql`${work} -> 'recordLink' = 'true'::jsonb`,
+      sql`${work} -> 'mapping' ->> 'integrationId' = ${input.mapping.integrationId}`,
+      sql`${work} -> 'mapping' ->> 'spaceId' = ${input.mapping.spaceId}`,
+      sql`${work} -> 'mapping' ->> 'mappingAuthorUserId' = ${input.mapping.mappingAuthorUserId}`,
+      sql`${work} -> 'mapping' -> 'binding' ->> 'provider' = ${binding.provider}`,
+      sql`${work} -> 'mapping' -> 'binding' ->> 'repositoryId' = ${String(binding.repositoryId)}`,
       sql`${work} -> 'fact' ->> 'requestNumber' = ${String(input.requestNumber)}`,
       inArray(sql<string>`${work} -> 'fact' ->> 'trigger'`, input.triggers),
       sql`${gitWebhookDeliveries.createdAt} > now() - interval '1 hour'`,
@@ -48,9 +55,9 @@ export class DrizzleGitRequestPredecessorsRepository {
          )
       )`,
     ];
-    if (input.binding.provider === 'github') {
+    if (binding.provider === 'github') {
       predicates.push(
-        sql`${work} -> 'mapping' -> 'binding' ->> 'installationId' = ${String(input.binding.installationId)}`,
+        sql`${work} -> 'mapping' -> 'binding' ->> 'installationId' = ${String(binding.installationId)}`,
       );
     }
     const rows = await scope.db

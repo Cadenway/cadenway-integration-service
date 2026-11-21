@@ -108,7 +108,7 @@ async function selectWork(
   );
   if (taskKeys === null) return null;
   const predecessors = await transaction.findPendingRequestWork(
-    mapping.binding,
+    mapping,
     fact.requestNumber,
     fact.trigger === 'pr_checks' ? ['pr_open', 'pr_merged', 'pr_head'] : ['pr_open', 'pr_merged'],
   );

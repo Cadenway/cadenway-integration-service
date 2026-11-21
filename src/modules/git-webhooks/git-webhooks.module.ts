@@ -152,13 +152,15 @@ async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
       provide: TaskPurgedHandler,
       inject: [CONFIG, EventConsumers, PurgeTaskGitLinks],
       useFactory: (config: AppConfig, consumers: EventConsumers, purge: PurgeTaskGitLinks) =>
-        config.GIT_LINK_EVENTS_ENABLED ? new TaskPurgedHandler(consumers, purge) : null,
+        config.GIT_LINK_EVENTS_ENABLED || config.GIT_LINK_PURGE_ENABLED
+          ? new TaskPurgedHandler(consumers, purge)
+          : null,
     },
     {
       provide: GitPurgeJobHandler,
       inject: [CONFIG, JobWorkerRegistry, PurgeTaskGitLinks],
       useFactory: (config: AppConfig, workers: JobWorkerRegistry, purge: PurgeTaskGitLinks) =>
-        config.GIT_LINK_EVENTS_ENABLED
+        config.GIT_LINK_EVENTS_ENABLED || config.GIT_LINK_PURGE_ENABLED
           ? new GitPurgeJobHandler(workers, purge, GIT_PURGE_QUEUE.name)
           : null,
     },

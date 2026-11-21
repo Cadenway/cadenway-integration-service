@@ -45,8 +45,10 @@ provider content stays in Integration.
 
 `task.purged.v1`. The `purge-task-git-links` durable fences the canonical task key and removes its
 links in batches of at most 500. The consumer and continuation worker are enabled together with
-link creation by `GIT_LINK_EVENTS_ENABLED`. It defaults to off until the broker grants the durable
-consumer and Task exposes its signed Git command.
+link creation by `GIT_LINK_EVENTS_ENABLED`. Both stay off until the broker grants the durable
+consumer and Task exposes its signed Git command. Set `GIT_LINK_PURGE_ENABLED` before first link
+activation and keep it enabled when new link admission pauses so existing links keep receiving
+terminal task purges.
 
 ## Invariants
 

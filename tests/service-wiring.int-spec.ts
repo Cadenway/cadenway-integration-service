@@ -482,6 +482,28 @@ describe('integration-service wiring', () => {
         },
         { timeout: 10_000, interval: 50 },
       );
+      await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+        tenant.run(async ({ client }) => {
+          await client.query(
+            `insert into git_webhook_deliveries
+               (organization_id, receiver_id, provider, receiver_revision, digest, work)
+             select d.organization_id, d.receiver_id, d.provider,
+                    case when variant.name = 'old-revision' then d.receiver_revision + 1
+                         else d.receiver_revision end,
+                    repeat(variant.digest, 64),
+                    case variant.name
+                      when 'old-author' then jsonb_set(d.work, '{mapping,mappingAuthorUserId}', to_jsonb($2::text))
+                      when 'legacy' then d.work - 'recordLink'
+                      else d.work
+                    end
+               from git_webhook_deliveries d join git_webhook_delivery_ids a
+                 on (d.organization_id, d.id) = (a.organization_id, a.receipt_id)
+               cross join (values ('old-revision', 'b'), ('old-author', 'c'), ('legacy', 'd')) variant(name, digest)
+              where a.delivery_id = $1`,
+            [opening, gitIntegrationId],
+          );
+        }),
+      );
       await send('closed', closing).expect(204);
       const admitted = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
         tenant.run(({ client }) =>

@@ -77,15 +77,21 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
 
   /** Finds accepted dependent work under the same receiver and mapping as the new observation. */
   public async findPendingRequestWork(
-    binding: Parameters<GitDeliveryTransaction['findPendingRequestWork']>[0],
+    mapping: GitDeliveryMapping,
     requestNumber: number,
     triggers: Parameters<GitDeliveryTransaction['findPendingRequestWork']>[2],
   ): ReturnType<GitDeliveryTransaction['findPendingRequestWork']> {
-    if (this.links === undefined || binding.provider !== this.provider) return [];
+    if (
+      this.links === undefined ||
+      this.receiverRevision === null ||
+      mapping.binding.provider !== this.provider
+    )
+      return [];
     return await new DrizzleGitRequestPredecessorsRepository().findPending(this.scope, {
       organizationId: this.organizationId,
       receiverId: this.receiverId,
-      binding,
+      receiverRevision: this.receiverRevision,
+      mapping,
       requestNumber,
       triggers,
     });

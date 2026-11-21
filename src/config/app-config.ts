@@ -81,6 +81,7 @@ export type AppConfig = BaseConfig &
     readonly TASK_SERVICE_URL?: string | undefined;
     readonly GIT_WEBHOOK_RECEIVERS: readonly z.output<typeof gitReceiverSchema>[];
     readonly GIT_LINK_EVENTS_ENABLED: boolean;
+    readonly GIT_LINK_PURGE_ENABLED: boolean;
   };
 
 /**
@@ -106,6 +107,10 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     TASK_SERVICE_URL: z.url({ protocol: /^https?$/u }).optional(),
     GIT_WEBHOOK_RECEIVERS: gitWebhookReceiversSchema,
     GIT_LINK_EVENTS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    GIT_LINK_PURGE_ENABLED: z
       .enum(['true', 'false'])
       .default('false')
       .transform((value) => value === 'true'),
