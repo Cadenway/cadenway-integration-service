@@ -1,6 +1,13 @@
-import { CONFIG, ConfigModule, HealthModule, postgresIndicator } from '@cadenway/nest-common';
-import type { PostgresProbe } from '@cadenway/nest-common';
+import {
+  CONFIG,
+  ConfigModule,
+  HealthModule,
+  createApplication,
+  postgresIndicator,
+} from '@cadenway/nest-common';
+import type { CreateApplicationOptions, PostgresProbe } from '@cadenway/nest-common';
 import { DATABASE_POOL, DatabaseModule } from '@cadenway/nest-common/database';
+import { JobsRuntimeModule } from '@cadenway/nest-jobs/runtime';
 import {
   MessagingConnection,
   MessagingModule,
@@ -8,9 +15,14 @@ import {
 } from '@cadenway/nest-messaging';
 import { OutboxModule } from '@cadenway/nest-messaging/outbox';
 import { Module } from '@nestjs/common';
+import type { DynamicModule, Type } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { NextFunction, Request, Response } from 'express';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
+import { GIT_DISPATCH_QUEUE } from './config/job-queues.js';
+import { GitWebhooksModule } from './modules/git-webhooks/git-webhooks.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 
 /**
@@ -37,6 +49,10 @@ import { PlatformModule } from './modules/platform/platform.module.js';
  * - `OutboxModule`: the outbox writer, the PostgreSQL deduplicator and the relay, which polls
  *   `outbox_events` every second in a system transaction and publishes the pending rows. It runs in
  *   every replica; `for update skip locked` keeps two of them from publishing the same row.
+ * - `JobsRuntimeModule`: the transactional producer and worker for verified Git actions. Startup
+ *   verifies the queue provisioned by the migrator. The scheduler capability enables recovery of
+ *   abandoned attempts, queue retention and monitoring of dead letters. Each dispatch owns its
+ *   short tenant transactions around the Task call.
  * - `HealthModule`: `GET /health/live` answers as soon as the process runs; `GET /health/ready`
  *   answers 503 while PostgreSQL or NATS does not answer within 1 second, and from the start of a
  *   shutdown. Both routes are exempt from the internal token, every other route requires it.
@@ -74,6 +90,16 @@ import { PlatformModule } from './modules/platform/platform.module.js';
       }),
     }),
     OutboxModule.forRoot(),
+    JobsRuntimeModule.forRootAsync({
+      inject: [CONFIG],
+      useFactory: (config: AppConfig) => ({
+        connection: { connectionString: config.DATABASE_URL },
+        queues: [GIT_DISPATCH_QUEUE],
+        capabilities: ['producer', 'worker', 'scheduler'],
+        poolSize: 2,
+        shutdownTimeoutMs: 8_000,
+      }),
+    }),
     HealthModule.forRootAsync({
       inject: [DATABASE_POOL, MessagingConnection],
       useFactory: (pool: PostgresProbe, connection: MessagingConnection) => ({
@@ -82,6 +108,40 @@ import { PlatformModule } from './modules/platform/platform.module.js';
       }),
     }),
     PlatformModule,
+    GitWebhooksModule,
   ],
 })
 export class AppModule {}
+
+/** Applies private webhook routing, the shared raw body limit and internal-token verification. */
+export async function createIntegrationApplication(
+  config: Readonly<AppConfig>,
+  applicationModule: Type | DynamicModule = AppModule,
+  logDestination?: CreateApplicationOptions['logDestination'],
+): Promise<NestExpressApplication> {
+  const app = await createApplication(applicationModule, {
+    service: 'integration-service',
+    config,
+    rawJsonPostPaths: ['/internal/v1/webhooks/github', '/internal/v1/webhooks/gitlab'],
+    internalToken: {
+      verifier: {
+        audience: config.INTERNAL_TOKEN_AUDIENCE,
+        trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+      },
+    },
+    ...(logDestination === undefined ? {} : { logDestination }),
+  });
+  const webhookPath = /^\/internal\/v1\/webhooks\/(?:github|gitlab)\/?$/iu;
+  app.use(webhookPath, (_request: Request, response: Response, next: NextFunction): void => {
+    response.setHeader('Cache-Control', 'private, no-store');
+    next();
+  });
+  app.use(
+    webhookPath,
+    (error: unknown, _request: Request, response: Response, next: NextFunction): void => {
+      response.setHeader('Cache-Control', 'private, no-store');
+      next(error);
+    },
+  );
+  return app;
+}

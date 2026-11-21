@@ -8,6 +8,27 @@
       "when": 1794752712054,
       "tag": "0000_platform_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795261386238,
+      "tag": "0001_git_webhook_admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795261592154,
+      "tag": "0002_git_webhook_receivers",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795262271514,
+      "tag": "0003_git_dispatch_claims",
+      "breakpoints": true
     }
   ]
 }
