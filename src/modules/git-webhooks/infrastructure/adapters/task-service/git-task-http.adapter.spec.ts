@@ -67,9 +67,13 @@ const authorized: TaskResponse = {
   headers: {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'private, no-store',
-    'Idempotent-Replayed': 'true',
   },
   body: JSON.stringify(receipt),
+};
+const replayed: TaskResponse = {
+  ...authorized,
+  headers: { ...authorized.headers, 'Idempotent-Replayed': 'true' },
+  body: JSON.stringify({ ...receipt, disposition: 'applied' }),
 };
 
 function taskProblem(status: number, code: string): TaskResponse {
@@ -197,6 +201,98 @@ describe('GitTaskHttpAdapter', () => {
     );
   });
 
+  it('keeps the original disposition and uses the new list of a task moved within its space', async () => {
+    const movedReceipt = { ...receipt, listId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e08' };
+    await withTaskServer(
+      signer,
+      (attempt) =>
+        attempt === 1 ? replayed : { ...authorized, body: JSON.stringify(movedReceipt) },
+      async (adapter, calls) => {
+        await expect(adapter.apply(claim, 'review')).resolves.toEqual({
+          ...movedReceipt,
+          disposition: 'applied',
+        });
+        expect(calls).toHaveLength(2);
+        expect(calls[0]?.headers['idempotency-key']).toBe(claim.commandKey);
+        expect(calls[1]?.headers['idempotency-key']).not.toBe(claim.commandKey);
+        expect(calls[1]?.headers['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/u);
+        expect(calls[1]?.url).toBe(calls[0]?.url);
+        expect(JSON.parse(calls[1]?.body ?? '')).toEqual({
+          provider: 'github',
+          spaceId,
+          mappingAuthorUserId,
+          status: null,
+        });
+        const token = calls[1]?.headers.authorization?.replace(/^Bearer /u, '') ?? '';
+        await expect(verifier.verify(token)).resolves.toMatchObject({
+          issuer: 'integration-service',
+          audience: 'task-service',
+          actor: { type: 'git', id: integrationId },
+          organizationId,
+        });
+      },
+    );
+  });
+
+  it('closes the target if the mapping author cannot edit the currently placed task', async () => {
+    await withTaskServer(
+      signer,
+      (attempt) => (attempt === 1 ? replayed : taskProblem(404, 'task.not-found')),
+      async (adapter, calls) => {
+        await expect(adapter.apply(claim, 'review')).resolves.toEqual({
+          disposition: 'unavailable',
+        });
+        expect(calls).toHaveLength(2);
+        expect(JSON.parse(calls[1]?.body ?? '')).toMatchObject({
+          mappingAuthorUserId,
+          status: null,
+        });
+      },
+    );
+  });
+
+  it.each([
+    { reason: 'replayed', receipt: { ...replayed, body: authorized.body } },
+    {
+      reason: 'applied',
+      receipt: { ...authorized, body: JSON.stringify({ ...receipt, disposition: 'applied' }) },
+    },
+    {
+      reason: 'for a different task',
+      receipt: { ...authorized, body: JSON.stringify({ ...receipt, taskId: integrationId }) },
+    },
+  ])('fails a placement check with a receipt that is $reason', async ({ receipt }) => {
+    await withTaskServer(
+      signer,
+      (attempt) => (attempt === 1 ? replayed : receipt),
+      async (adapter) => {
+        await expect(adapter.apply(claim, 'review')).rejects.toThrow('current placement');
+      },
+    );
+  });
+
+  it('retries the original action key and creates a fresh key for each placement check', async () => {
+    const replies = [replayed, taskProblem(503, 'task.action-unavailable'), replayed, authorized];
+    await withTaskServer(
+      signer,
+      (attempt) => replies[attempt - 1] ?? taskProblem(500, 'http.internal-server-error'),
+      async (adapter, calls) => {
+        await expect(adapter.apply(claim, 'review')).rejects.toMatchObject({
+          problem: { status: 503 },
+        });
+        await expect(adapter.apply(claim, 'review')).resolves.toEqual({
+          ...receipt,
+          disposition: 'applied',
+        });
+        const keys = calls.map((call) => call.headers['idempotency-key']);
+        expect(keys).toHaveLength(4);
+        expect(keys[0]).toBe(claim.commandKey);
+        expect(keys[2]).toBe(claim.commandKey);
+        expect(new Set(keys).size).toBe(3);
+      },
+    );
+  });
+
   it.each([
     {
       name: 'cacheable',
@@ -215,6 +311,13 @@ describe('GitTaskHttpAdapter', () => {
       response: { ...authorized, body: JSON.stringify({ ...receipt, title: 'test' }) },
     },
     { name: 'malformed', response: { ...authorized, body: '{' } },
+    {
+      name: 'marked with an invalid replay header',
+      response: {
+        ...authorized,
+        headers: { ...authorized.headers, 'Idempotent-Replayed': 'false' },
+      },
+    },
   ])('rejects a receipt that is $name', async ({ response }) => {
     await withTaskServer(
       signer,

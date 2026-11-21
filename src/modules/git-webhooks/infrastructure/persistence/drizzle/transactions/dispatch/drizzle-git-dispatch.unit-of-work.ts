@@ -7,6 +7,7 @@ import type {
 import { and, eq, sql } from 'drizzle-orm';
 
 import type { GitDispatchClaim } from '../../../../../application/models/dispatch/git-dispatch-claim.model.js';
+import type { GitTaskActionResult } from '../../../../../application/models/dispatch/git-task-action-result.model.js';
 import type { GitDispatchUnitOfWork } from '../../../../../application/ports/outbound/transactions/dispatch/git-dispatch-unit-of-work.port.js';
 import { gitRepositoryMappings } from '../../schemas/deliveries/git-repository-mappings.schema.js';
 import { gitWebhookDeliveries } from '../../schemas/deliveries/git-webhook-deliveries.schema.js';
@@ -20,7 +21,15 @@ type Claim = typeof gitDispatchClaims.$inferSelect;
 export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
   // #region Constructor
   /** Uses the service's tenant transaction runner. */
-  public constructor(private readonly runner: TenantTransactionRunner<DatabaseSchema>) {}
+  public constructor(
+    private readonly runner: TenantTransactionRunner<DatabaseSchema>,
+    private readonly recordLink?: (
+      scope: TransactionScope<DatabaseSchema>,
+      claim: GitDispatchClaim,
+      receiverId: string,
+      placement: Exclude<GitTaskActionResult, { readonly disposition: 'unavailable' }>,
+    ) => Promise<void>,
+  ) {}
   // #endregion
 
   // #region Methods
@@ -88,6 +97,7 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
         await this.close(scope, input.organizationId, stored.id);
         return 'closed';
       }
+      await this.recordLink?.(scope, input.claim, delivery.receiverId, input.result);
       await scope.db
         .update(gitDispatchClaims)
         .set({

@@ -52,10 +52,15 @@ const otherOrganizationId = '01938f6e-0000-7000-8000-000000000002';
 const camilleMartinId = '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c24';
 
 const gitReceiverId = '01938f6e-0000-7000-8000-000000000061';
+const gitOrganizationId = '01938f6e-0000-7000-8000-000000000060';
 const gitSpaceId = '01938f6e-0000-7000-8000-000000000062';
 const gitIntegrationId = '01938f6e-0000-7000-8000-000000000063';
 const gitTaskId = '01938f6e-0000-7000-8000-000000000064';
 const gitListId = '01938f6e-0000-7000-8000-000000000065';
+const gitTaskIdsByPath = new Map([
+  ['/internal/v1/tasks/CAD-483/git-status-actions', '01938f6e-0000-7000-8000-000000000066'],
+  ['/internal/v1/tasks/CAD-484/git-status-actions', '01938f6e-0000-7000-8000-000000000067'],
+]);
 const gitFixtureKey = randomBytes(32).toString('hex');
 
 /** The tables of the platform module, as the kit names them. */
@@ -67,6 +72,8 @@ const platformTables = [
 ] as const;
 const gitTables = [
   'git_dispatch_claims',
+  'git_links',
+  'git_purged_tasks',
   'git_repository_mappings',
   'git_webhook_deliveries',
   'git_webhook_delivery_ids',
@@ -239,7 +246,7 @@ describe('integration-service wiring', () => {
       outgoing.end(
         JSON.stringify({
           disposition: 'applied',
-          taskId: gitTaskId,
+          taskId: gitTaskIdsByPath.get(incoming.url ?? '') ?? gitTaskId,
           listId: gitListId,
           spaceId: gitSpaceId,
         }),
@@ -307,12 +314,13 @@ describe('integration-service wiring', () => {
       throw new Error('Task fixture has no port.');
     vi.stubEnv('TASK_SERVICE_URL', `http://127.0.0.1:${String(taskAddress.port)}`);
     vi.stubEnv('INTERNAL_TOKEN_PRIVATE_JWK', JSON.stringify(integration.privateJwk));
+    vi.stubEnv('GIT_LINK_EVENTS_ENABLED', 'true');
     vi.stubEnv(
       'GIT_WEBHOOK_RECEIVERS',
       JSON.stringify([
         {
           bindingId: gitReceiverId,
-          organizationId: atelierNordId,
+          organizationId: gitOrganizationId,
           provider: 'github',
           revision: 1,
           signingSecret: gitFixtureKey,
@@ -343,19 +351,19 @@ describe('integration-service wiring', () => {
     });
 
     const tenant = service().get(TenantTransactionRunner);
-    await runWithOrganizationContext(memberOf(atelierNordId), () =>
+    await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
       tenant.run(async (tx) => {
         await tx.client.query(
           `insert into git_webhook_receivers (organization_id, id, provider)
            values ($1, $2, 'github')`,
-          [atelierNordId, gitReceiverId],
+          [gitOrganizationId, gitReceiverId],
         );
         await tx.client.query(
           `insert into git_repository_mappings
              (organization_id, receiver_id, provider, repository_id, installation_id,
               space_id, integration_id, mapping_author_user_id)
            values ($1, $2, 'github', 81, 41, $3, $4, $5)`,
-          [atelierNordId, gitReceiverId, gitSpaceId, gitIntegrationId, camilleMartinId],
+          [gitOrganizationId, gitReceiverId, gitSpaceId, gitIntegrationId, camilleMartinId],
         );
       }),
     );
@@ -393,7 +401,7 @@ describe('integration-service wiring', () => {
         tableowner: 'integration_migrator',
       })),
     );
-    expect(journal.rows).toEqual([{ applied: 4 }]);
+    expect(journal.rows).toEqual([{ applied: 5 }]);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -402,7 +410,7 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 4 }]);
+    expect(journal.rows).toEqual([{ applied: 5 }]);
   });
 
   it('accepts one pending Git action for two signed deliveries of the same raw body', async () => {
@@ -450,7 +458,7 @@ describe('integration-service wiring', () => {
       'private, no-store',
       'private, no-store',
     ]);
-    const admitted = await runWithOrganizationContext(memberOf(atelierNordId), () =>
+    const admitted = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
       tenant.run((tx) =>
         tx.client.query(
           `select work->'fact'->>'trigger' as trigger, work->'fact'->'taskKeys' as keys
@@ -467,7 +475,7 @@ describe('integration-service wiring', () => {
 
     await vi.waitFor(
       async () => {
-        const claim = await runWithOrganizationContext(memberOf(atelierNordId), () =>
+        const claim = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
           tenant.run((tx) =>
             tx.client.query(
               `select claim.id, claim.disposition
@@ -484,6 +492,31 @@ describe('integration-service wiring', () => {
         }[];
         expect(claims.map(({ disposition }) => disposition)).toEqual(['applied']);
         expect(typeof claims[0]?.id).toBe('string');
+        const links = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+          tenant.run((transaction) =>
+            transaction.client.query(
+              `select link.task_key, link.status, link.version::int, event.event_name, event.payload
+                 from git_links link join outbox_events event
+                   on event.organization_id = link.organization_id
+                   and event.payload->>'gitLinkId' = link.id::text
+                 where link.task_key = 'CAD-482'`,
+            ),
+          ),
+        );
+        expect(links.rows).toHaveLength(1);
+        expect(links.rows[0]).toMatchObject({
+          task_key: 'CAD-482',
+          status: 'open',
+          version: 1,
+          event_name: 'git.pr-opened.v1',
+          payload: {
+            taskKey: 'CAD-482',
+            spaceId: gitSpaceId,
+            listId: gitListId,
+            changed: ['state'],
+            actor: { type: 'git', id: gitIntegrationId },
+          },
+        });
         expect(
           taskCommands.filter(
             ({ path }) => path === '/internal/v1/tasks/CAD-482/git-status-actions',
@@ -569,7 +602,7 @@ describe('integration-service wiring', () => {
     if (firstJobId === undefined) throw new Error('The first job was never inserted.');
 
     const receiptCounts = () =>
-      runWithOrganizationContext(memberOf(atelierNordId), () =>
+      runWithOrganizationContext(memberOf(gitOrganizationId), () =>
         tenant.run((tx) =>
           tx.client.query(
             `select
@@ -577,7 +610,7 @@ describe('integration-service wiring', () => {
                  where organization_id = $1 and receiver_id = $2 and digest = $3) as receipts,
                (select count(*)::int from git_webhook_delivery_ids
                  where organization_id = $1 and receiver_id = $2 and delivery_id = $4) as aliases`,
-            [atelierNordId, gitReceiverId, digest, providerDeliveryId],
+            [gitOrganizationId, gitReceiverId, digest, providerDeliveryId],
           ),
         ),
       );
@@ -601,7 +634,7 @@ describe('integration-service wiring', () => {
     expect((await receiptCounts()).rows).toEqual([{ receipts: 1, aliases: 1 }]);
     await vi.waitFor(
       async () => {
-        const claims = await runWithOrganizationContext(memberOf(atelierNordId), () =>
+        const claims = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
           tenant.run((tx) =>
             tx.client.query(
               `select claim.task_key, claim.status, claim.disposition
@@ -609,7 +642,7 @@ describe('integration-service wiring', () => {
                  on alias.organization_id = claim.organization_id and alias.receipt_id = claim.delivery_id
                where alias.organization_id = $1 and alias.receiver_id = $2 and alias.delivery_id = $3
                order by claim.task_key`,
-              [atelierNordId, gitReceiverId, providerDeliveryId],
+              [gitOrganizationId, gitReceiverId, providerDeliveryId],
             ),
           ),
         );
@@ -818,7 +851,7 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 4 }]);
+    expect(journal.rows).toEqual([{ applied: 5 }]);
   });
 
   it('publishes successive outbox events and remains ready', async () => {

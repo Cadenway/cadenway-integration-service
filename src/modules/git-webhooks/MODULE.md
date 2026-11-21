@@ -18,6 +18,8 @@ organization. The receiver registration supplies the authoritative tenant.
 - `git_webhook_deliveries` and `git_webhook_delivery_ids` store receipt digests and provider aliases.
 - `git_dispatch_claims` reserves one stable Task command key per admitted target and records its
   terminal disposition. The jobs runtime owns the queue tables.
+- `git_links` stores versioned changes per verified provider reference and authorized task.
+- `git_purged_tasks` stores the terminal task key fence used by replay and cleanup.
 
 ## API
 
@@ -30,11 +32,19 @@ receiver has a deployment-supplied signing credential and a matching enabled dat
 
 ## Events emitted
 
-None.
+- `git.branch-created.v1`
+- `git.pr-opened.v1`
+- `git.pr-merged.v1`
+
+Each fact carries the canonical task key, authorized placement and stable link ID and version. The
+provider content stays in Integration.
 
 ## Events consumed
 
-None.
+`task.purged.v1`. The `purge-task-git-links` durable fences the canonical task key and removes its
+links in batches of at most 500. The consumer and continuation worker are enabled together with
+link creation by `GIT_LINK_EVENTS_ENABLED`. It defaults to off until the broker grants the durable
+consumer and Task exposes its signed Git command.
 
 ## Invariants
 
@@ -64,6 +74,11 @@ None.
   together. An exact replay does not create any job.
 - Dispatch reserves its Task command ID in a short tenant transaction, performs HTTP outside the
   transaction and revalidates the receiver and mapping when recording Task's authorized placement.
+- A replayed Task receipt obtains current signed placement through a fresh no-op command. The
+  dispatch settlement, changed link and corresponding fact commit together.
+- Purge uses the same tenant and task key lock as link creation. The event receipt, marker,
+  deletion batch and any continuation commit together. The marker blocks recreation between
+  batches.
 
 ## Decisions
 

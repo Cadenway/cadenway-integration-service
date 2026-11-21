@@ -80,6 +80,7 @@ export type AppConfig = BaseConfig &
       InternalTokenSignerConfig['INTERNAL_TOKEN_PRIVATE_JWK'] | undefined;
     readonly TASK_SERVICE_URL?: string | undefined;
     readonly GIT_WEBHOOK_RECEIVERS: readonly z.output<typeof gitReceiverSchema>[];
+    readonly GIT_LINK_EVENTS_ENABLED: boolean;
   };
 
 /**
@@ -104,6 +105,10 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
       internalTokenSignerConfigShape.INTERNAL_TOKEN_PRIVATE_JWK.optional(),
     TASK_SERVICE_URL: z.url({ protocol: /^https?$/u }).optional(),
     GIT_WEBHOOK_RECEIVERS: gitWebhookReceiversSchema,
+    GIT_LINK_EVENTS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
   })
   .superRefine((config, ctx) => {
     if (config.GIT_WEBHOOK_RECEIVERS.length === 0) return;

@@ -10,3 +10,12 @@ export const GIT_DISPATCH_QUEUE = {
   // Keep expired work long enough for the worker to reject it into the dead-letter queue.
   retentionSeconds: 48 * 60 * 60,
 } as const satisfies JobQueueDeclaration;
+
+/** Continues link removals after the first transaction marks a task as permanently purged. */
+export const GIT_PURGE_QUEUE = {
+  name: 'integration.purge-task-git-links',
+  retryLimit: 4,
+  retryDelaySeconds: 15,
+  retryDelayMaxSeconds: 120,
+  expireInSeconds: 30,
+} as const satisfies JobQueueDeclaration;
