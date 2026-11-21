@@ -226,7 +226,11 @@ function readTaskReferences(
 
       const key = reference.toUpperCase();
       taskKeys.add(key);
-      if (taskKeys.size > MAX_TASK_KEYS) return { kind: 'ignored' };
+      if (taskKeys.size > MAX_TASK_KEYS) {
+        return automation.trigger === 'pr_merged'
+          ? { kind: 'actionable', ...automation, taskKeys: [], closingTaskKeys: [] }
+          : { kind: 'ignored' };
+      }
 
       if (automation.trigger === 'pr_merged' && verb && CLOSING_VERBS.has(verb.toLowerCase())) {
         closingTaskKeys.add(key);
@@ -234,7 +238,13 @@ function readTaskReferences(
     }
   }
 
-  if (taskKeys.size === 0 && automation.trigger !== 'pr_closed') return { kind: 'ignored' };
+  if (
+    taskKeys.size === 0 &&
+    automation.trigger !== 'pr_closed' &&
+    automation.trigger !== 'pr_merged'
+  ) {
+    return { kind: 'ignored' };
+  }
 
   return {
     kind: 'actionable',

@@ -64,11 +64,13 @@ terminal task purges.
 - Each provider's signature is compared against the computed digest in constant time. GitLab
   signature lists may contain multiple versions or signatures for key rotation. Only a matching
   `v1` signature for the configured `whsec_` key authenticates the payload.
-- Up to 20 distinct task references are admitted together. Branch creation proposes `progress`,
+- Up to 20 distinct task references are read from one delivery. Branch creation proposes `progress`,
   opening a pull request proposes `review`, and a merged pull request proposes `done` for keys with
-  a closing verb. Other merge references only resolve authorized placement. A signed closure,
-  current request-head observation or completed check can only use an existing link for the same
-  receiver, verified provider binding and request number. A check must match the current observed
+  a closing verb in the signed merge delivery. The merge also settles authorized existing links
+  for the same request, including links whose task references were removed or exceeded the limit.
+  An inferred task can only update an existing link. A signed closure, current request-head
+  observation or completed check can only use an existing link for the same receiver,
+  verified provider binding and request number. A check must match the current observed
   head and advance its check watermark. Conflicting heads at the same provider timestamp are ignored
   because their delivery order cannot establish which one is current. These deliveries do not change
   Task status.
@@ -83,7 +85,9 @@ terminal task purges.
   under the tenant transaction. A fresh receipt, its alias and all of its target jobs commit
   together. An exact replay does not create any job.
 - The receiver selects at most 20 tasks from existing links and prior accepted work for the same
-  request. If an earlier opening or head observation still needs to settle, the dependent job keeps
+  request. A merge combines that audience with up to 20 distinct signed task references. If pending
+  work would exceed the historical limit, the merge keeps the bounded set of recorded links.
+  If an earlier opening or head observation still needs to settle, the dependent job keeps
   its prerequisites and retries inside its dispatch window. A job without an approved Task
   placement does not create a link.
 - Link-producing receipts go to `integration.dispatch-git-link` and preserve that choice until

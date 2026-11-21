@@ -133,23 +133,111 @@ describe('AdmitGitWebhook', () => {
     });
   });
 
-  it('closes only existing linked tasks even after the task reference was removed', async () => {
+  it.each(['No remaining reference', 'Closes CAD-499'])(
+    'closes only existing linked tasks with the edited title "%s"',
+    async (title) => {
+      const { command, transaction } = setup();
+      vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-483']);
+      const closed = {
+        ...payload,
+        action: 'closed',
+        pull_request: {
+          ...payload.pull_request,
+          state: 'closed',
+          head: { ref: 'revised-branch', repo: { id: 501 } },
+          title,
+        },
+      };
+      await expect(
+        command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(closed)) }),
+      ).resolves.toEqual({ status: 'accepted' });
+      expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(mapping.binding, 214, undefined);
+      expect(transaction.admit).toHaveBeenCalledWith({
+        deliveryId: input.deliveryId,
+        digest: 'a'.repeat(64),
+        work: {
+          mapping,
+          fact: {
+            kind: 'actionable',
+            trigger: 'pr_closed',
+            requestNumber: 214,
+            taskKeys: ['CAD-483'],
+            closingTaskKeys: [],
+          },
+        },
+      });
+    },
+  );
+
+  it.each([
+    { title: 'No remaining reference', explicitlyReferenced: [], closing: [] },
+    { title: 'Closes CAD-483', explicitlyReferenced: ['CAD-483'], closing: ['CAD-483'] },
+  ])(
+    'adopts the merged fact for previous links and pending openings with "$title"',
+    async ({ title, explicitlyReferenced, closing }) => {
+      const { command, transaction } = setup();
+      const predecessor = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e10';
+      vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-482', 'CAD-483']);
+      vi.mocked(transaction.findPendingRequestWork).mockResolvedValue([
+        { id: predecessor, taskKeys: ['CAD-482', 'CAD-484'] },
+      ]);
+      const merged = {
+        ...payload,
+        action: 'closed',
+        pull_request: {
+          ...payload.pull_request,
+          state: 'closed',
+          merged: true,
+          head: { ref: 'revised-branch', repo: { id: 501 } },
+          title,
+        },
+      };
+
+      await expect(
+        command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(merged)) }),
+      ).resolves.toEqual({ status: 'accepted' });
+      expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(mapping.binding, 214, undefined);
+      expect(transaction.admit).toHaveBeenCalledWith({
+        deliveryId: input.deliveryId,
+        digest: 'a'.repeat(64),
+        work: {
+          mapping,
+          fact: {
+            kind: 'actionable',
+            trigger: 'pr_merged',
+            requestNumber: 214,
+            taskKeys: ['CAD-482', 'CAD-483', 'CAD-484'],
+            closingTaskKeys: closing,
+            referencedTaskKeys: explicitlyReferenced,
+          },
+          prerequisiteIds: [predecessor],
+        },
+      });
+    },
+  );
+
+  it('keeps recorded links and a new signed closing target when pending targets exceed the bound', async () => {
     const { command, transaction } = setup();
-    vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-483']);
-    const closed = {
+    const linked = Array.from({ length: 20 }, (_, index) => 'CAD-' + String(index + 1));
+    const predecessor = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e10';
+    vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(linked);
+    vi.mocked(transaction.findPendingRequestWork).mockResolvedValue([
+      { id: predecessor, taskKeys: ['CAD-21'] },
+    ]);
+    const merged = {
       ...payload,
       action: 'closed',
       pull_request: {
         ...payload.pull_request,
         state: 'closed',
+        merged: true,
         head: { ref: 'revised-branch', repo: { id: 501 } },
-        title: 'No remaining reference',
+        title: 'Closes CAD-22',
       },
     };
-    await expect(
-      command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(closed)) }),
-    ).resolves.toEqual({ status: 'accepted' });
-    expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(mapping.binding, 214, undefined);
+
+    await command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(merged)) });
+
     expect(transaction.admit).toHaveBeenCalledWith({
       deliveryId: input.deliveryId,
       digest: 'a'.repeat(64),
@@ -157,11 +245,13 @@ describe('AdmitGitWebhook', () => {
         mapping,
         fact: {
           kind: 'actionable',
-          trigger: 'pr_closed',
+          trigger: 'pr_merged',
           requestNumber: 214,
-          taskKeys: ['CAD-483'],
-          closingTaskKeys: [],
+          taskKeys: [...linked, 'CAD-22'],
+          closingTaskKeys: ['CAD-22'],
+          referencedTaskKeys: ['CAD-22'],
         },
+        prerequisiteIds: [predecessor],
       },
     });
   });

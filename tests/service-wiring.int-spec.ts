@@ -61,6 +61,8 @@ const gitTaskIdsByPath = new Map([
   ['/internal/v1/tasks/CAD-483/git-status-actions', '01938f6e-0000-7000-8000-000000000066'],
   ['/internal/v1/tasks/CAD-484/git-status-actions', '01938f6e-0000-7000-8000-000000000067'],
   ['/internal/v1/tasks/CAD-485/git-status-actions', '01938f6e-0000-7000-8000-000000000068'],
+  ['/internal/v1/tasks/CAD-486/git-status-actions', '01938f6e-0000-7000-8000-000000000069'],
+  ['/internal/v1/tasks/CAD-487/git-status-actions', '01938f6e-0000-7000-8000-000000000070'],
 ]);
 const gitFixtureKey = randomBytes(32).toString('hex');
 
@@ -549,6 +551,96 @@ describe('integration-service wiring', () => {
       },
       { timeout: 15_000 },
     );
+  });
+
+  it('records a merge for both existing links and closes only the task still referenced', async () => {
+    const tenant = service().get(TenantTransactionRunner);
+    const token = await signer.sign('integration-service', {
+      actor: { type: 'system', id: 'api-gateway' },
+      organizationId: null,
+    });
+    const repository = { id: 81 };
+    const number = 226;
+    const send = (merged: boolean, deliveryId: string) => {
+      const payload = JSON.stringify({
+        repository,
+        installation: { id: 41 },
+        number,
+        action: merged ? 'closed' : 'opened',
+        pull_request: {
+          number,
+          state: merged ? 'closed' : 'open',
+          merged,
+          head: { ref: 'feature', repo: repository },
+          base: { ref: 'main', repo: repository },
+          title: merged ? 'Closes CAD-487' : 'Feature CAD-486 and CAD-487',
+        },
+      });
+      return request(service().getHttpServer())
+        .post(`/internal/v1/webhooks/github?bindingId=${gitReceiverId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Delivery', deliveryId)
+        .set('X-GitHub-Event', 'pull_request')
+        .set(
+          'X-Hub-Signature-256',
+          `sha256=${createHmac('sha256', gitFixtureKey).update(payload).digest('hex')}`,
+        )
+        .send(payload);
+    };
+    const events = () =>
+      runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+        tenant.run(({ client }) =>
+          client.query(
+            `select link.task_key, link.status, (event.payload->>'version')::int as version,
+                    event.event_name
+                from git_links link join outbox_events event
+                  on event.organization_id = link.organization_id
+                  and event.payload->>'gitLinkId' = link.id::text
+              where link.task_key in ('CAD-486', 'CAD-487')
+                and event.status = 'sent'
+              order by link.task_key, (event.payload->>'version')::int`,
+          ),
+        ),
+      );
+    await send(false, randomUUID()).expect(204);
+    await vi.waitFor(
+      async () => {
+        expect((await events()).rows).toEqual([
+          { task_key: 'CAD-486', status: 'open', version: 1, event_name: 'git.pr-opened.v1' },
+          { task_key: 'CAD-487', status: 'open', version: 1, event_name: 'git.pr-opened.v1' },
+        ]);
+      },
+      { timeout: 15_000, interval: 50 },
+    );
+
+    const mergeDeliveryId = randomUUID();
+    await send(true, mergeDeliveryId).expect(204);
+    await send(true, mergeDeliveryId).expect(204);
+    await vi.waitFor(
+      async () => {
+        expect((await events()).rows).toEqual([
+          { task_key: 'CAD-486', status: 'merged', version: 1, event_name: 'git.pr-opened.v1' },
+          { task_key: 'CAD-486', status: 'merged', version: 2, event_name: 'git.pr-merged.v1' },
+          { task_key: 'CAD-487', status: 'merged', version: 1, event_name: 'git.pr-opened.v1' },
+          { task_key: 'CAD-487', status: 'merged', version: 2, event_name: 'git.pr-merged.v1' },
+        ]);
+      },
+      { timeout: 15_000, interval: 50 },
+    );
+    for (const [taskKey, status] of [
+      ['CAD-486', null],
+      ['CAD-487', 'done'],
+    ] as const) {
+      expect(
+        taskCommands
+          .filter(({ path }) => path === `/internal/v1/tasks/${taskKey}/git-status-actions`)
+          .map(({ body }) => body),
+      ).toEqual([
+        expect.objectContaining({ status: 'review' }),
+        expect.objectContaining({ status }),
+      ]);
+    }
   });
 
   it('accepts one pending Git action for two signed deliveries of the same raw body', async () => {
