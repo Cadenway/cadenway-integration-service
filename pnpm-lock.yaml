@@ -173,8 +173,8 @@ importers:
         specifier: 0.12.0
         version: 0.12.0(@grpc/grpc-js@1.14.7)(@grpc/proto-loader@0.8.1)(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.4.2)(@nestjs/platform-express@12.4.2)(@opentelemetry/api@1.10.0)(drizzle-orm@0.45.4(@opentelemetry/api@1.10.0)(@types/pg@8.23.1)(pg@8.23.1))(ioredis@6.0.0)(pg@8.23.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(zod@4.6.7)
       '@cadenway/nest-jobs':
-        specifier: 0.3.0
-        version: 0.3.0(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.4.2)(@opentelemetry/api@1.10.0)(pg@8.23.1)
+        specifier: 0.4.0
+        version: 0.4.0(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.4.2)(@opentelemetry/api@1.10.0)(pg@8.23.1)
       '@cadenway/nest-messaging':
         specifier: 0.7.1
         version: 0.7.1(@cadenway/contracts@0.29.0)(@cadenway/nest-common@0.12.0(@grpc/grpc-js@1.14.7)(@grpc/proto-loader@0.8.1)(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.4.2)(@nestjs/platform-express@12.4.2)(@opentelemetry/api@1.10.0)(drizzle-orm@0.45.4(@opentelemetry/api@1.10.0)(@types/pg@8.23.1)(pg@8.23.1))(ioredis@6.0.0)(pg@8.23.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(zod@4.6.7))(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.4.2)(@opentelemetry/api@1.10.0)(drizzle-orm@0.45.4(@opentelemetry/api@1.10.0)(@types/pg@8.23.1)(pg@8.23.1))(pg@8.23.1)(zod@4.6.7)
@@ -380,8 +380,8 @@ packages:
       rxjs: ^7.8.2
       zod: ^4.6.0
 
-  '@cadenway/nest-jobs@0.3.0':
-    resolution: {integrity: sha512-WiyKylfUVPn0SpACKJdkBNu16IsDLHG+MSUfhdIuOC6Q9eeU0uWgFyAHN9MiOiHfOLG599oIZpHEiA8+3duvSg==, tarball: https://npm.pkg.github.com/download/@cadenway/nest-jobs/0.3.0/ec5f943dd341dc56d6894322b7d0b2b3cc2d1193}
+  '@cadenway/nest-jobs@0.4.0':
+    resolution: {integrity: sha512-GGshejaKxb0yUODV+bwyyvupjemvLiy3vaSH5grGLz2vhtLQxwITYlD+dyz579Yy7hLv97HfjA8E+ITj8DHtCA==, tarball: https://npm.pkg.github.com/download/@cadenway/nest-jobs/0.4.0/ac88c36fb4c6d084df0cf2fcf6bdfc7b51fd2416}
     peerDependencies:
       '@nestjs/common': ^12.4.2
       '@nestjs/core': ^12.4.2
@@ -4572,7 +4572,7 @@ snapshots:
       - supports-color
       - typeorm
 
-  '@cadenway/nest-jobs@0.3.0(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.4.2)(@opentelemetry/api@1.10.0)(pg@8.23.1)':
+  '@cadenway/nest-jobs@0.4.0(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.4.2)(@opentelemetry/api@1.10.0)(pg@8.23.1)':
     dependencies:
       '@nestjs/common': 12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2)
       '@nestjs/core': 12.4.2(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@12.4.2)(reflect-metadata@0.2.2)(rxjs@7.8.2)

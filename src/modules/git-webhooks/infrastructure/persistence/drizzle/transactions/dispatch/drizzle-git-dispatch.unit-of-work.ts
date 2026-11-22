@@ -9,6 +9,8 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { GitDispatchClaim } from '../../../../../application/models/dispatch/git-dispatch-claim.model.js';
 import type { GitTaskActionResult } from '../../../../../application/models/dispatch/git-task-action-result.model.js';
 import type { GitDispatchUnitOfWork } from '../../../../../application/ports/outbound/transactions/dispatch/git-dispatch-unit-of-work.port.js';
+import type { decideGitCheckPrerequisites } from '../../../../../application/models/dispatch/git-check-prerequisites.model.js';
+import type { GitDispatchJobsProducer } from '../../../../jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 import { DrizzleGitRequestPredecessorsRepository } from '../../repositories/deliveries/drizzle-git-request-predecessors.repository.js';
 import { gitRepositoryMappings } from '../../schemas/deliveries/git-repository-mappings.schema.js';
 import { gitWebhookDeliveries } from '../../schemas/deliveries/git-webhook-deliveries.schema.js';
@@ -30,6 +32,10 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
       receiverId: string,
       placement: Exclude<GitTaskActionResult, { readonly disposition: 'unavailable' }>,
     ) => Promise<void>,
+    private readonly checkContinuation?: {
+      readonly decide: typeof decideGitCheckPrerequisites;
+      readonly jobs: Pick<GitDispatchJobsProducer, 'enqueue'>;
+    },
   ) {}
   // #endregion
 
@@ -52,17 +58,8 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
         if (existing !== null) await this.close(scope, input.organizationId, existing.id);
         return { status: 'closed' };
       }
-      if (
-        delivery.work.prerequisiteIds !== undefined &&
-        (await new DrizzleGitRequestPredecessorsRepository().hasPendingForTask(
-          scope,
-          input.organizationId,
-          delivery.work.prerequisiteIds,
-          input.taskKey,
-        ))
-      ) {
-        throw new Error('An earlier Git request action has not settled.');
-      }
+      const prerequisites = await this.preparePrerequisites(scope, input, delivery.work);
+      if (prerequisites === 'deferred') return { status: 'deferred' };
       const rows =
         existing === null
           ? await scope.db
@@ -71,6 +68,7 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
                 organizationId: input.organizationId,
                 deliveryId: input.deliveryId,
                 taskKey: input.taskKey,
+                ...(prerequisites === 'closed' ? { status: 'closed' as const } : {}),
               })
               .onConflictDoNothing()
               .returning()
@@ -80,10 +78,51 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
         (await this.findClaim(scope, input.organizationId, input.deliveryId, input.taskKey));
       if (claim === null) throw new Error('The Git dispatch claim was not recorded.');
       if (claim.status !== 'pending') return { status: claim.status };
+      if (prerequisites === 'closed') {
+        await this.close(scope, input.organizationId, claim.id);
+        return { status: 'closed' };
+      }
       if (delivery.receiverRevision === null)
         throw new Error('The verified receiver revision is missing.');
       return { status: 'ready', claim: this.toClaim(delivery, claim) };
     });
+  }
+
+  /** Atomically defers a blocked check while the receiver and mapping are locked. */
+  private async preparePrerequisites(
+    scope: TransactionScope<DatabaseSchema>,
+    input: Parameters<GitDispatchUnitOfWork['prepare']>[0],
+    work: NonNullable<Delivery['work']>,
+  ): Promise<'ready' | 'closed' | 'deferred'> {
+    if (work.prerequisiteIds === undefined) return 'ready';
+    const unsettled = await new DrizzleGitRequestPredecessorsRepository().findUnsettledForTask(
+      scope,
+      input.organizationId,
+      work.prerequisiteIds,
+      input.taskKey,
+    );
+    if (work.fact.trigger !== 'pr_checks') {
+      if (unsettled.length !== 0) throw new Error('An earlier Git request action has not settled.');
+      return 'ready';
+    }
+    const continuation = this.checkContinuation;
+    if (continuation === undefined)
+      throw new Error('The Git dispatch continuation is not configured.');
+    const clock = await scope.db.execute<{ readonly now: number }>(
+      sql`select floor(extract(epoch from clock_timestamp()) * 1000)::double precision as now`,
+    );
+    const now = clock.rows[0]?.now;
+    if (now === undefined) throw new Error('The Git dispatch clock is unavailable.');
+    const decision = continuation.decide(input.deliveryId, unsettled, now);
+    if (decision.status !== 'deferred') return decision.status;
+    await continuation.jobs.enqueue(
+      scope,
+      input.deliveryId,
+      input.taskKey,
+      work.recordLink === true,
+      decision.startAfter,
+    );
+    return 'deferred';
   }
 
   /** Rechecks authority and records a terminal Task result with the verified placement. */

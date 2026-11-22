@@ -11,7 +11,7 @@ export interface GitDispatchUnitOfWork {
     readonly taskKey: string;
   }) => Promise<
     | { readonly status: 'ready'; readonly claim: GitDispatchClaim }
-    | { readonly status: 'closed' | 'completed' }
+    | { readonly status: 'closed' | 'completed' | 'deferred' }
   >;
 
   /**

@@ -76,7 +76,7 @@ terminal task purges.
   Task status.
   Task owns current
   visibility, the mapping author's authority, status progression and activity.
-- The worker uses the same Task command ID across its five attempts. It sends no action after the
+- The worker uses the same Task command ID across transport attempts. It sends no action after the
   one-hour command window. Exhausted attempts go to a dead-letter queue with fixed diagnostics.
 
 ## Transactions
@@ -90,6 +90,11 @@ terminal task purges.
   If an earlier opening or head observation still needs to settle, the dependent job keeps
   its prerequisites and retries inside its dispatch window. A job without an approved Task
   placement does not create a link.
+- A blocked check for a live predecessor records a delayed job with the same receipt and target
+  before completing the current job. Its polling slot follows the PostgreSQL clock and has a
+  stable occurrence key within the check's original dispatch window. An expired predecessor with an
+  unsettled verified head observation closes the dependent check without a Task command or check event.
+  Checks that resume still compare the exact current recorded head under the link lock.
 - Link-producing receipts go to `integration.dispatch-git-link` and preserve that choice until
   settlement. Compatibility workers continue to handle the original status queue. A compatible
   worker can drain the link queue after new link admissions are disabled.

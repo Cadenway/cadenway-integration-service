@@ -12,6 +12,7 @@ import {
   GIT_PURGE_QUEUE,
 } from '../../config/job-queues.js';
 import type { GitTaskAction } from './application/ports/outbound/actions/dispatch/git-task-action.port.js';
+import { decideGitCheckPrerequisites } from './application/models/dispatch/git-check-prerequisites.model.js';
 import { AdmitGitWebhook } from './application/use-cases/commands/deliveries/admit-git-webhook/admit-git-webhook.use-case.js';
 import { DispatchGitDelivery } from './application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
 import { PurgeTaskGitLinks } from './application/use-cases/commands/purge/purge-task-git-links/purge-task-git-links.use-case.js';
@@ -93,11 +94,12 @@ async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
     },
     {
       provide: DispatchGitDelivery,
-      inject: [TenantTransactionRunner, CONFIG, OutboxWriter],
+      inject: [TenantTransactionRunner, CONFIG, OutboxWriter, GitDispatchJobsProducer],
       useFactory: async (
         runner: TenantTransactionRunner<DatabaseSchema>,
         config: AppConfig,
         outboxWriter: OutboxWriter,
+        jobs: GitDispatchJobsProducer,
       ) => {
         const links = new DrizzleGitLinkRepository();
         const outbox = new GitLinkChangedOutbox(outboxWriter);
@@ -124,6 +126,7 @@ async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
               placement,
             });
           },
+          { decide: decideGitCheckPrerequisites, jobs },
         );
         return new DispatchGitDelivery(work, await createTaskAction(config));
       },
