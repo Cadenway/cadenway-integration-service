@@ -83,7 +83,7 @@ export const gitWebhookDeliveries = pgTable(
   ],
 ).enableRLS();
 
-/** Provider delivery IDs recorded even when a GitHub digest is a replay. */
+/** First-seen provider delivery IDs and historical aliases that still fence conflicting IDs. */
 export const gitWebhookDeliveryIds = pgTable(
   'git_webhook_delivery_ids',
   {

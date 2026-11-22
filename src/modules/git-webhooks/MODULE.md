@@ -53,12 +53,15 @@ terminal task purges.
 ## Invariants
 
 - Configure a signing key dedicated to each receiver. Verify the original body before decoding JSON.
+  Startup requires distinct secrets across receivers. The dedicated token identifies the GitLab
+  instance for the receiver because its numeric project IDs are local to that instance.
 - The HTTP parser and the verifier reject bodies larger than 1,048,576 bytes.
 - GitHub authenticates only the body. Its delivery ID and event name are untrusted routing metadata.
   The receiver binding determines the Cadenway organization. Authenticated provider identifiers
   must match the installation and repository recorded in that binding. Intake must fence GitHub
-  replays by atomically recording the body digest scoped to the receiver. An original body presented
-  with a different delivery ID cannot trigger another action.
+  replays by atomically recording the body digest scoped to the receiver. A replay with a different
+  delivery ID creates neither an alias nor another action. The admitted delivery ID and historical
+  aliases continue to fence reuse with a different digest.
 - GitLab authenticates the delivery ID, original timestamp text and body. The timestamp must be
   within 300 seconds of the receiver clock. The event name is untrusted routing metadata.
 - Each provider's signature is compared against the computed digest in constant time. GitLab
@@ -81,9 +84,9 @@ terminal task purges.
 
 ## Transactions
 
-- Admission locks the receiver, revalidates its revision and resolves the exact repository mapping
-  under the tenant transaction. A fresh receipt, its alias and all of its target jobs commit
-  together. An exact replay does not create any job.
+- Admission locks the receiver, revalidates its revision and checks for duplicates before resolving
+  the exact repository mapping under the tenant transaction. A fresh receipt, its delivery ID and
+  all of its target jobs commit together.
 - The receiver selects at most 20 tasks from existing links and prior accepted work for the same
   request. A merge combines that audience with up to 20 distinct signed task references. If pending
   work would exceed the historical limit, the merge keeps the bounded set of recorded links.

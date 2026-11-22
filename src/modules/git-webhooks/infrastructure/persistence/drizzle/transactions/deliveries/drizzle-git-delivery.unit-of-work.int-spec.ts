@@ -91,7 +91,7 @@ describe('Git delivery persistence', () => {
     compose('down', '--volumes', '--remove-orphans');
   });
 
-  it('atomically deduplicates concurrent GitHub bodies and retains delivery ID conflicts', async () => {
+  it('retains only the admitted GitHub delivery ID across concurrent body duplicates', async () => {
     const run = (tenant: string, deliveryId: string, bodyDigest: string) =>
       runWithOrganizationContext(
         { organizationId: tenant, actor: { type: 'user', id: actor }, role: null, scopes: [] },
@@ -108,7 +108,7 @@ describe('Git delivery persistence', () => {
               selectedReceiver,
               'github',
             );
-            const prior = await delivery.checkDeliveryId(deliveryId, bodyDigest);
+            const prior = await delivery.checkDelivery(deliveryId, bodyDigest);
             return prior === 'new'
               ? delivery.admit({ deliveryId, digest: bodyDigest, work: null })
               : prior;
@@ -120,7 +120,8 @@ describe('Git delivery persistence', () => {
       run(organization, 'second', digest),
     ]);
     expect(outcomes.toSorted()).toEqual(['accepted', 'duplicate']);
-    expect(await run(organization, 'second', otherDigest)).toBe('conflict');
+    const admittedId = outcomes[0] === 'accepted' ? 'first' : 'second';
+    expect(await run(organization, admittedId, otherDigest)).toBe('conflict');
     expect(await run(organization, 'third', digest)).toBe('duplicate');
     expect(await run(otherOrganization, 'first', digest)).toBe('accepted');
     const counts = await runWithOrganizationContext(
@@ -132,7 +133,7 @@ describe('Git delivery persistence', () => {
           ),
         ),
     );
-    expect(counts.rows).toEqual([{ receipts: 1, ids: 3 }]);
+    expect(counts.rows).toEqual([{ receipts: 1, ids: 1 }]);
   });
 
   it('rolls back accepted work and matches the active repository under its tenant', async () => {
@@ -174,7 +175,7 @@ describe('Git delivery persistence', () => {
           });
           expect(await delivery.findMapping({ provider: 'gitlab', repositoryId: 124 })).toBeNull();
           if (mapping === null) throw new Error('Mapping fixture is missing.');
-          expect(await delivery.checkDeliveryId('gitlab-delivery', digest)).toBe('new');
+          expect(await delivery.checkDelivery('gitlab-delivery', digest)).toBe('new');
           const result = await delivery.admit({
             deliveryId: 'gitlab-delivery',
             digest,
@@ -202,13 +203,13 @@ describe('Git delivery persistence', () => {
           gitlabReceiver,
           'gitlab',
         );
-        expect(await delivery.checkDeliveryId('gitlab-delivery', digest)).toBe('new');
+        expect(await delivery.checkDelivery('gitlab-delivery', digest)).toBe('new');
         expect(await delivery.admit({ deliveryId: 'gitlab-delivery', digest, work: null })).toBe(
           'accepted',
         );
-        expect(await delivery.checkDeliveryId('gitlab-delivery', digest)).toBe('duplicate');
-        expect(await delivery.checkDeliveryId('gitlab-delivery', otherDigest)).toBe('conflict');
-        expect(await delivery.checkDeliveryId('GITLAB-DELIVERY', otherDigest)).toBe('new');
+        expect(await delivery.checkDelivery('gitlab-delivery', digest)).toBe('duplicate');
+        expect(await delivery.checkDelivery('gitlab-delivery', otherDigest)).toBe('conflict');
+        expect(await delivery.checkDelivery('GITLAB-DELIVERY', digest)).toBe('new');
       }),
     );
   });

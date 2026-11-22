@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 
@@ -75,6 +76,43 @@ describe('appConfigSchema', () => {
       'INTERNAL_TOKEN_PRIVATE_JWK',
       'TASK_SERVICE_URL',
     ]);
+  });
+
+  it('requires distinct signing credentials for separately configured receivers', () => {
+    const receiver = {
+      bindingId: '01938f6e-0000-7000-8000-000000000061',
+      organizationId: '01938f6e-0000-7000-8000-000000000062',
+      provider: 'gitlab',
+      revision: 1,
+      signingSecret: `whsec_${Buffer.alloc(32, 1).toString('base64')}`,
+    };
+    const otherReceiver = {
+      ...receiver,
+      bindingId: '01938f6e-0000-7000-8000-000000000063',
+      organizationId: '01938f6e-0000-7000-8000-000000000064',
+    };
+    const privateKey = generateKeyPairSync('ed25519').privateKey.export({ format: 'jwk' });
+    const dispatchConfig = {
+      ...complete,
+      INTERNAL_TOKEN_PRIVATE_JWK: JSON.stringify({ ...privateKey, kid: 'integration-fixture' }),
+      TASK_SERVICE_URL: 'http://task-service:3013',
+    };
+
+    const loadReceivers = (second: typeof otherReceiver) =>
+      loadConfig(appConfigSchema, {
+        ...dispatchConfig,
+        GIT_WEBHOOK_RECEIVERS: JSON.stringify([receiver, second]),
+      });
+    expect(() => loadReceivers(otherReceiver)).toThrow(
+      /GIT_WEBHOOK_RECEIVERS: Receiver signing credentials must be distinct\./u,
+    );
+    expect(() => loadReceivers(otherReceiver)).not.toThrow(receiver.signingSecret);
+    expect(
+      loadReceivers({
+        ...otherReceiver,
+        signingSecret: `whsec_${Buffer.alloc(32, 2).toString('base64')}`,
+      }).GIT_WEBHOOK_RECEIVERS,
+    ).toHaveLength(2);
   });
 
   it('refuses to start without the database, the broker, the audience or the trusted issuers', () => {

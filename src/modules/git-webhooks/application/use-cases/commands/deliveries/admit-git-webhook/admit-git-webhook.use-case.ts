@@ -40,7 +40,7 @@ export class AdmitGitWebhook {
     }
 
     const result = await this.work.run(receiver, async (transaction) => {
-      const prior = await transaction.checkDeliveryId(deliveryId, digest);
+      const prior = await transaction.checkDelivery(deliveryId, digest);
       if (prior !== 'new') return prior;
 
       const identity = repositoryIdentity(input.provider, body);

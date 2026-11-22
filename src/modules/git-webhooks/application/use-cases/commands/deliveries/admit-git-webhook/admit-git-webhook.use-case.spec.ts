@@ -49,7 +49,7 @@ function setup(): {
   readonly verify: ReturnType<typeof vi.fn>;
 } {
   const transaction: GitDeliveryTransaction = {
-    checkDeliveryId: vi.fn().mockResolvedValue('new'),
+    checkDelivery: vi.fn().mockResolvedValue('new'),
     findMapping: vi.fn().mockResolvedValue(mapping),
     findRequestTaskKeys: vi.fn().mockResolvedValue([]),
     findPendingRequestWork: vi.fn().mockResolvedValue([]),
@@ -68,7 +68,7 @@ describe('AdmitGitWebhook', () => {
     const { command, transaction, verify } = setup();
     await expect(command.execute(input)).resolves.toEqual({ status: 'accepted' });
     expect(verify).toHaveBeenCalledWith(input, receiver.signingSecret);
-    expect(transaction.checkDeliveryId).toHaveBeenCalledExactlyOnceWith(
+    expect(transaction.checkDelivery).toHaveBeenCalledExactlyOnceWith(
       input.deliveryId,
       'a'.repeat(64),
     );
@@ -99,7 +99,7 @@ describe('AdmitGitWebhook', () => {
     await expect(command.execute({ ...input, rawBody: Uint8Array.of(0xff) })).resolves.toEqual({
       status: 'authentication-failed',
     });
-    expect(transaction.checkDeliveryId).not.toHaveBeenCalled();
+    expect(transaction.checkDelivery).not.toHaveBeenCalled();
     expect(transaction.findMapping).not.toHaveBeenCalled();
     expect(transaction.admit).not.toHaveBeenCalled();
   });
@@ -356,7 +356,7 @@ describe('AdmitGitWebhook', () => {
     'rejects reused IDs with different bytes for $event even without a mapping',
     async ({ event, body }) => {
       const { command, transaction } = setup();
-      vi.mocked(transaction.checkDeliveryId).mockResolvedValue('conflict');
+      vi.mocked(transaction.checkDelivery).mockResolvedValue('conflict');
       vi.mocked(transaction.findMapping).mockResolvedValue(null);
       const unrelated = new TextEncoder().encode(JSON.stringify(body));
       await expect(command.execute({ ...input, event, rawBody: unrelated })).resolves.toEqual({
@@ -369,7 +369,7 @@ describe('AdmitGitWebhook', () => {
 
   it('acknowledges the known authenticated body even after the mapping is revoked', async () => {
     const { command, transaction } = setup();
-    vi.mocked(transaction.checkDeliveryId).mockResolvedValue('duplicate');
+    vi.mocked(transaction.checkDelivery).mockResolvedValue('duplicate');
     vi.mocked(transaction.findMapping).mockResolvedValue(null);
     await expect(command.execute({ ...input, event: 'ping' })).resolves.toEqual({
       status: 'accepted',
@@ -383,7 +383,7 @@ describe('AdmitGitWebhook', () => {
     const upper = { ...input, deliveryId: input.deliveryId.toUpperCase() };
     await expect(command.execute(upper)).resolves.toEqual({ status: 'accepted' });
     expect(verify).toHaveBeenCalledWith(upper, receiver.signingSecret);
-    expect(transaction.checkDeliveryId).toHaveBeenCalledExactlyOnceWith(
+    expect(transaction.checkDelivery).toHaveBeenCalledExactlyOnceWith(
       input.deliveryId,
       'a'.repeat(64),
     );
@@ -392,24 +392,23 @@ describe('AdmitGitWebhook', () => {
     );
   });
 
-  it('can record an authenticated alias after checking the current mapping and event', async () => {
+  it('acknowledges a known GitHub digest without recording an additional delivery ID', async () => {
     const { command, transaction } = setup();
-    vi.mocked(transaction.admit).mockResolvedValue('duplicate');
+    vi.mocked(transaction.checkDelivery).mockResolvedValue('duplicate');
     const deliveryId = '806f0650-bdef-4474-a5cf-22b60c810f77';
     await expect(command.execute({ ...input, deliveryId })).resolves.toEqual({
       status: 'accepted',
     });
-    expect(transaction.checkDeliveryId).toHaveBeenCalledExactlyOnceWith(deliveryId, 'a'.repeat(64));
-    expect(transaction.admit).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ deliveryId, digest: 'a'.repeat(64) }),
-    );
+    expect(transaction.checkDelivery).toHaveBeenCalledExactlyOnceWith(deliveryId, 'a'.repeat(64));
+    expect(transaction.findMapping).not.toHaveBeenCalled();
+    expect(transaction.admit).not.toHaveBeenCalled();
   });
 
   it('fails closed if the receiver is revoked after signature verification', async () => {
     const { command, work, transaction } = setup();
     vi.spyOn(work, 'run').mockResolvedValue({ active: false });
     await expect(command.execute(input)).resolves.toEqual({ status: 'authentication-failed' });
-    expect(transaction.checkDeliveryId).not.toHaveBeenCalled();
+    expect(transaction.checkDelivery).not.toHaveBeenCalled();
     expect(transaction.admit).not.toHaveBeenCalled();
   });
 
@@ -454,7 +453,7 @@ describe('AdmitGitWebhook', () => {
         rawBody: new TextEncoder().encode(JSON.stringify(body)),
       }),
     ).resolves.toEqual({ status: 'accepted' });
-    expect(transaction.checkDeliveryId).toHaveBeenCalledExactlyOnceWith(deliveryId, 'a'.repeat(64));
+    expect(transaction.checkDelivery).toHaveBeenCalledExactlyOnceWith(deliveryId, 'a'.repeat(64));
     expect(transaction.findMapping).toHaveBeenCalledWith({ provider: 'gitlab', repositoryId: 701 });
     expect(transaction.admit).toHaveBeenCalledWith({
       deliveryId,
