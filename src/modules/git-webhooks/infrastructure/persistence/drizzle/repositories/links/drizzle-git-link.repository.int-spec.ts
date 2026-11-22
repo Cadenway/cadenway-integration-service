@@ -159,6 +159,32 @@ describe('Git link persistence', () => {
     expect(visible.rows).toEqual([]);
   });
 
+  it('requires a signed reference for a merge to establish a link that does not exist', async () => {
+    const fact = {
+      ...request,
+      trigger: 'pr_merged',
+      requestNumber: 231,
+      referencedTaskKeys: [],
+    } as const;
+    const context = {
+      organizationId,
+      actor: { type: 'user' as const, id: actor },
+      role: null,
+      scopes: [],
+    };
+    const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, fact);
+    await runWithOrganizationContext(context, () =>
+      runner.run(async (scope) => {
+        expect(await links.record(scope, identity, fact, 'CAD-482')).toBeNull();
+        const explicit = { ...fact, referencedTaskKeys: ['CAD-482'] };
+        expect((await links.record(scope, identity, explicit, 'CAD-482'))?.event).toEqual({
+          type: 'pull-request-merged',
+          version: 1,
+        });
+      }),
+    );
+  });
+
   it('permanently fences task links when purge races with a late delivery', async () => {
     const fact = {
       ...request,

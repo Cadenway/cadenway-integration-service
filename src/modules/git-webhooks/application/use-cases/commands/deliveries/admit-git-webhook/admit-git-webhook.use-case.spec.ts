@@ -49,7 +49,7 @@ function setup(): {
   readonly verify: ReturnType<typeof vi.fn>;
 } {
   const transaction: GitDeliveryTransaction = {
-    checkDeliveryId: vi.fn().mockResolvedValue('new'),
+    checkDelivery: vi.fn().mockResolvedValue('new'),
     findMapping: vi.fn().mockResolvedValue(mapping),
     findRequestTaskKeys: vi.fn().mockResolvedValue([]),
     findPendingRequestWork: vi.fn().mockResolvedValue([]),
@@ -68,7 +68,7 @@ describe('AdmitGitWebhook', () => {
     const { command, transaction, verify } = setup();
     await expect(command.execute(input)).resolves.toEqual({ status: 'accepted' });
     expect(verify).toHaveBeenCalledWith(input, receiver.signingSecret);
-    expect(transaction.checkDeliveryId).toHaveBeenCalledExactlyOnceWith(
+    expect(transaction.checkDelivery).toHaveBeenCalledExactlyOnceWith(
       input.deliveryId,
       'a'.repeat(64),
     );
@@ -99,7 +99,7 @@ describe('AdmitGitWebhook', () => {
     await expect(command.execute({ ...input, rawBody: Uint8Array.of(0xff) })).resolves.toEqual({
       status: 'authentication-failed',
     });
-    expect(transaction.checkDeliveryId).not.toHaveBeenCalled();
+    expect(transaction.checkDelivery).not.toHaveBeenCalled();
     expect(transaction.findMapping).not.toHaveBeenCalled();
     expect(transaction.admit).not.toHaveBeenCalled();
   });
@@ -133,23 +133,111 @@ describe('AdmitGitWebhook', () => {
     });
   });
 
-  it('closes only existing linked tasks even after the task reference was removed', async () => {
+  it.each(['No remaining reference', 'Closes CAD-499'])(
+    'closes only existing linked tasks with the edited title "%s"',
+    async (title) => {
+      const { command, transaction } = setup();
+      vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-483']);
+      const closed = {
+        ...payload,
+        action: 'closed',
+        pull_request: {
+          ...payload.pull_request,
+          state: 'closed',
+          head: { ref: 'revised-branch', repo: { id: 501 } },
+          title,
+        },
+      };
+      await expect(
+        command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(closed)) }),
+      ).resolves.toEqual({ status: 'accepted' });
+      expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(mapping.binding, 214, undefined);
+      expect(transaction.admit).toHaveBeenCalledWith({
+        deliveryId: input.deliveryId,
+        digest: 'a'.repeat(64),
+        work: {
+          mapping,
+          fact: {
+            kind: 'actionable',
+            trigger: 'pr_closed',
+            requestNumber: 214,
+            taskKeys: ['CAD-483'],
+            closingTaskKeys: [],
+          },
+        },
+      });
+    },
+  );
+
+  it.each([
+    { title: 'No remaining reference', explicitlyReferenced: [], closing: [] },
+    { title: 'Closes CAD-483', explicitlyReferenced: ['CAD-483'], closing: ['CAD-483'] },
+  ])(
+    'adopts the merged fact for previous links and pending openings with "$title"',
+    async ({ title, explicitlyReferenced, closing }) => {
+      const { command, transaction } = setup();
+      const predecessor = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e10';
+      vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-482', 'CAD-483']);
+      vi.mocked(transaction.findPendingRequestWork).mockResolvedValue([
+        { id: predecessor, taskKeys: ['CAD-482', 'CAD-484'] },
+      ]);
+      const merged = {
+        ...payload,
+        action: 'closed',
+        pull_request: {
+          ...payload.pull_request,
+          state: 'closed',
+          merged: true,
+          head: { ref: 'revised-branch', repo: { id: 501 } },
+          title,
+        },
+      };
+
+      await expect(
+        command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(merged)) }),
+      ).resolves.toEqual({ status: 'accepted' });
+      expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(mapping.binding, 214, undefined);
+      expect(transaction.admit).toHaveBeenCalledWith({
+        deliveryId: input.deliveryId,
+        digest: 'a'.repeat(64),
+        work: {
+          mapping,
+          fact: {
+            kind: 'actionable',
+            trigger: 'pr_merged',
+            requestNumber: 214,
+            taskKeys: ['CAD-482', 'CAD-483', 'CAD-484'],
+            closingTaskKeys: closing,
+            referencedTaskKeys: explicitlyReferenced,
+          },
+          prerequisiteIds: [predecessor],
+        },
+      });
+    },
+  );
+
+  it('keeps recorded links and a new signed closing target when pending targets exceed the bound', async () => {
     const { command, transaction } = setup();
-    vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-483']);
-    const closed = {
+    const linked = Array.from({ length: 20 }, (_, index) => 'CAD-' + String(index + 1));
+    const predecessor = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e10';
+    vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(linked);
+    vi.mocked(transaction.findPendingRequestWork).mockResolvedValue([
+      { id: predecessor, taskKeys: ['CAD-21'] },
+    ]);
+    const merged = {
       ...payload,
       action: 'closed',
       pull_request: {
         ...payload.pull_request,
         state: 'closed',
+        merged: true,
         head: { ref: 'revised-branch', repo: { id: 501 } },
-        title: 'No remaining reference',
+        title: 'Closes CAD-22',
       },
     };
-    await expect(
-      command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(closed)) }),
-    ).resolves.toEqual({ status: 'accepted' });
-    expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(mapping.binding, 214, undefined);
+
+    await command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(merged)) });
+
     expect(transaction.admit).toHaveBeenCalledWith({
       deliveryId: input.deliveryId,
       digest: 'a'.repeat(64),
@@ -157,11 +245,13 @@ describe('AdmitGitWebhook', () => {
         mapping,
         fact: {
           kind: 'actionable',
-          trigger: 'pr_closed',
+          trigger: 'pr_merged',
           requestNumber: 214,
-          taskKeys: ['CAD-483'],
-          closingTaskKeys: [],
+          taskKeys: [...linked, 'CAD-22'],
+          closingTaskKeys: ['CAD-22'],
+          referencedTaskKeys: ['CAD-22'],
         },
+        prerequisiteIds: [predecessor],
       },
     });
   });
@@ -266,7 +356,7 @@ describe('AdmitGitWebhook', () => {
     'rejects reused IDs with different bytes for $event even without a mapping',
     async ({ event, body }) => {
       const { command, transaction } = setup();
-      vi.mocked(transaction.checkDeliveryId).mockResolvedValue('conflict');
+      vi.mocked(transaction.checkDelivery).mockResolvedValue('conflict');
       vi.mocked(transaction.findMapping).mockResolvedValue(null);
       const unrelated = new TextEncoder().encode(JSON.stringify(body));
       await expect(command.execute({ ...input, event, rawBody: unrelated })).resolves.toEqual({
@@ -279,7 +369,7 @@ describe('AdmitGitWebhook', () => {
 
   it('acknowledges the known authenticated body even after the mapping is revoked', async () => {
     const { command, transaction } = setup();
-    vi.mocked(transaction.checkDeliveryId).mockResolvedValue('duplicate');
+    vi.mocked(transaction.checkDelivery).mockResolvedValue('duplicate');
     vi.mocked(transaction.findMapping).mockResolvedValue(null);
     await expect(command.execute({ ...input, event: 'ping' })).resolves.toEqual({
       status: 'accepted',
@@ -293,7 +383,7 @@ describe('AdmitGitWebhook', () => {
     const upper = { ...input, deliveryId: input.deliveryId.toUpperCase() };
     await expect(command.execute(upper)).resolves.toEqual({ status: 'accepted' });
     expect(verify).toHaveBeenCalledWith(upper, receiver.signingSecret);
-    expect(transaction.checkDeliveryId).toHaveBeenCalledExactlyOnceWith(
+    expect(transaction.checkDelivery).toHaveBeenCalledExactlyOnceWith(
       input.deliveryId,
       'a'.repeat(64),
     );
@@ -302,24 +392,23 @@ describe('AdmitGitWebhook', () => {
     );
   });
 
-  it('can record an authenticated alias after checking the current mapping and event', async () => {
+  it('acknowledges a known GitHub digest without recording an additional delivery ID', async () => {
     const { command, transaction } = setup();
-    vi.mocked(transaction.admit).mockResolvedValue('duplicate');
+    vi.mocked(transaction.checkDelivery).mockResolvedValue('duplicate');
     const deliveryId = '806f0650-bdef-4474-a5cf-22b60c810f77';
     await expect(command.execute({ ...input, deliveryId })).resolves.toEqual({
       status: 'accepted',
     });
-    expect(transaction.checkDeliveryId).toHaveBeenCalledExactlyOnceWith(deliveryId, 'a'.repeat(64));
-    expect(transaction.admit).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ deliveryId, digest: 'a'.repeat(64) }),
-    );
+    expect(transaction.checkDelivery).toHaveBeenCalledExactlyOnceWith(deliveryId, 'a'.repeat(64));
+    expect(transaction.findMapping).not.toHaveBeenCalled();
+    expect(transaction.admit).not.toHaveBeenCalled();
   });
 
   it('fails closed if the receiver is revoked after signature verification', async () => {
     const { command, work, transaction } = setup();
     vi.spyOn(work, 'run').mockResolvedValue({ active: false });
     await expect(command.execute(input)).resolves.toEqual({ status: 'authentication-failed' });
-    expect(transaction.checkDeliveryId).not.toHaveBeenCalled();
+    expect(transaction.checkDelivery).not.toHaveBeenCalled();
     expect(transaction.admit).not.toHaveBeenCalled();
   });
 
@@ -364,7 +453,7 @@ describe('AdmitGitWebhook', () => {
         rawBody: new TextEncoder().encode(JSON.stringify(body)),
       }),
     ).resolves.toEqual({ status: 'accepted' });
-    expect(transaction.checkDeliveryId).toHaveBeenCalledExactlyOnceWith(deliveryId, 'a'.repeat(64));
+    expect(transaction.checkDelivery).toHaveBeenCalledExactlyOnceWith(deliveryId, 'a'.repeat(64));
     expect(transaction.findMapping).toHaveBeenCalledWith({ provider: 'gitlab', repositoryId: 701 });
     expect(transaction.admit).toHaveBeenCalledWith({
       deliveryId,

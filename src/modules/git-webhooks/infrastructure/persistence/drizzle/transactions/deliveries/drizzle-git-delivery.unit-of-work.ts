@@ -1,5 +1,5 @@
 import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/database';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import type { GitDeliveryMapping } from '../../../../../application/models/deliveries/git-delivery-mapping.model.js';
 import type { GitRepositoryIdentity } from '../../../../../application/models/deliveries/git-repository-identity.model.js';
@@ -97,8 +97,8 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     });
   }
 
-  /** Checks an exact ID against its original authenticated digest in the caller's receiver lock. */
-  public async checkDeliveryId(
+  /** Checks the original ID binding and the GitHub body digest while the receiver is locked. */
+  public async checkDelivery(
     deliveryId: string,
     digest: string,
   ): Promise<'new' | 'duplicate' | 'conflict'> {
@@ -122,49 +122,41 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
       )
       .limit(1);
     const original = prior[0];
-    if (original === undefined) return 'new';
-    return original.digest === digest ? 'duplicate' : 'conflict';
+    if (original !== undefined) return original.digest === digest ? 'duplicate' : 'conflict';
+    if (this.provider !== 'github') return 'new';
+
+    const [duplicate] = await this.scope.db
+      .select({ id: gitWebhookDeliveries.id })
+      .from(gitWebhookDeliveries)
+      .where(
+        and(
+          eq(gitWebhookDeliveries.organizationId, this.organizationId),
+          eq(gitWebhookDeliveries.receiverId, this.receiverId),
+          sql`${gitWebhookDeliveries.provider} = 'github'`,
+          eq(gitWebhookDeliveries.digest, digest),
+        ),
+      )
+      .limit(1);
+    return duplicate === undefined ? 'new' : 'duplicate';
   }
 
-  /** Records a new alias and any first work together after mapping verification under the lock. */
-  public async admit(
-    input: Parameters<GitDeliveryTransaction['admit']>[0],
-  ): Promise<'accepted' | 'duplicate'> {
-    const duplicate =
-      this.provider === 'github'
-        ? await this.scope.db
-            .select({ id: gitWebhookDeliveries.id })
-            .from(gitWebhookDeliveries)
-            .where(
-              and(
-                eq(gitWebhookDeliveries.organizationId, this.organizationId),
-                eq(gitWebhookDeliveries.receiverId, this.receiverId),
-                eq(gitWebhookDeliveries.provider, this.provider),
-                eq(gitWebhookDeliveries.digest, input.digest),
-              ),
-            )
-            .limit(1)
-        : [];
-    const existing = duplicate[0];
+  /** Records a first receipt, its delivery ID and accepted work under the receiver lock. */
+  public async admit(input: Parameters<GitDeliveryTransaction['admit']>[0]): Promise<'accepted'> {
     const work: typeof gitWebhookDeliveries.$inferSelect.work =
       input.work !== null && this.links !== undefined
         ? { ...input.work, recordLink: true as const }
         : input.work;
-    const rows =
-      existing === undefined
-        ? await this.scope.db
-            .insert(gitWebhookDeliveries)
-            .values({
-              organizationId: this.organizationId,
-              receiverId: this.receiverId,
-              provider: this.provider,
-              receiverRevision: this.receiverRevision,
-              digest: input.digest,
-              work,
-            })
-            .returning({ id: gitWebhookDeliveries.id })
-        : [existing];
-    const receipt = rows[0];
+    const [receipt] = await this.scope.db
+      .insert(gitWebhookDeliveries)
+      .values({
+        organizationId: this.organizationId,
+        receiverId: this.receiverId,
+        provider: this.provider,
+        receiverRevision: this.receiverRevision,
+        digest: input.digest,
+        work,
+      })
+      .returning({ id: gitWebhookDeliveries.id });
     if (receipt === undefined) throw new Error('The verified Git delivery was not recorded.');
     await this.scope.db.insert(gitWebhookDeliveryIds).values({
       organizationId: this.organizationId,
@@ -173,12 +165,12 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
       deliveryId: input.deliveryId,
       receiptId: receipt.id,
     });
-    if (existing === undefined && work !== null && this.jobs !== undefined) {
+    if (work !== null && this.jobs !== undefined) {
       for (const taskKey of work.fact.taskKeys) {
         await this.jobs.enqueue(this.scope, receipt.id, taskKey, work.recordLink === true);
       }
     }
-    return existing === undefined ? 'accepted' : 'duplicate';
+    return 'accepted';
   }
   // #endregion
 }

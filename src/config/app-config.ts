@@ -40,6 +40,11 @@ const gitWebhookReceiversSchema = z
         (receivers) =>
           new Set(receivers.map((receiver) => receiver.bindingId)).size === receivers.length,
         { message: 'Receiver IDs must be distinct.' },
+      )
+      .refine(
+        (receivers) =>
+          new Set(receivers.map((receiver) => receiver.signingSecret)).size === receivers.length,
+        { message: 'Receiver signing credentials must be distinct.' },
       ),
   );
 

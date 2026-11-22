@@ -4,6 +4,10 @@ import type { Job, JobWorkerRegistry } from '@cadenway/nest-jobs/runtime';
 import { Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { z } from 'zod';
 
+import {
+  gitDispatchReceiptTimeMs,
+  gitDispatchWindowMs,
+} from '../../../../application/models/dispatch/git-check-prerequisites.model.js';
 import type { DispatchGitDelivery } from '../../../../application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
 
 const jobPayload = z.strictObject({
@@ -11,7 +15,6 @@ const jobPayload = z.strictObject({
   taskKey: ApplyGitTaskStatusActionInternalParams.shape.taskKey,
 });
 const organizationIdSchema = z.uuidv7();
-const receiptWindowMs = 60 * 60 * 1_000;
 const clockSkewMs = 60 * 1_000;
 
 /** Executes each admitted target through its durable, idempotent dispatch. */
@@ -48,9 +51,9 @@ export class GitDispatchJobHandler implements OnApplicationBootstrap {
 
     const { deliveryId, taskKey } = payload.data;
     // The UUIDv7 embeds the PostgreSQL receipt time, which survives worker restarts and retries.
-    const receiptTime = Number.parseInt(deliveryId.slice(0, 8) + deliveryId.slice(9, 13), 16);
+    const receiptTime = gitDispatchReceiptTimeMs(deliveryId);
     const age = Date.now() - receiptTime;
-    if (age >= receiptWindowMs || age < -clockSkewMs) {
+    if (age >= gitDispatchWindowMs || age < -clockSkewMs) {
       throw new Error('Git dispatch receipt is outside the dispatch window.');
     }
 

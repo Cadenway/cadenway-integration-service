@@ -40,7 +40,7 @@ export class AdmitGitWebhook {
     }
 
     const result = await this.work.run(receiver, async (transaction) => {
-      const prior = await transaction.checkDeliveryId(deliveryId, digest);
+      const prior = await transaction.checkDelivery(deliveryId, digest);
       if (prior !== 'new') return prior;
 
       const identity = repositoryIdentity(input.provider, body);
@@ -98,7 +98,7 @@ async function selectWork(
   mapping: GitDeliveryMapping,
   fact: Actionable,
 ): Promise<Parameters<GitDeliveryTransaction['admit']>[0]['work']> {
-  if (fact.trigger !== 'pr_closed' && fact.trigger !== 'pr_head' && fact.trigger !== 'pr_checks') {
+  if (fact.trigger === 'branch' || fact.trigger === 'pr_open') {
     return { mapping, fact };
   }
   const taskKeys = await transaction.findRequestTaskKeys(
@@ -106,21 +106,36 @@ async function selectWork(
     fact.requestNumber,
     fact.trigger === 'pr_checks' ? fact.checks.headSha : undefined,
   );
-  if (taskKeys === null) return null;
-  const predecessors = await transaction.findPendingRequestWork(
+  if (taskKeys === null && fact.trigger !== 'pr_merged') return null;
+  const pending = await transaction.findPendingRequestWork(
     mapping,
     fact.requestNumber,
     fact.trigger === 'pr_checks' ? ['pr_open', 'pr_merged', 'pr_head'] : ['pr_open', 'pr_merged'],
   );
-  if (predecessors === null) return null;
-  const targets = new Set(taskKeys);
+  if (pending === null && fact.trigger !== 'pr_merged') return null;
+  const predecessors = pending ?? [];
+  const historicalTargets = new Set(taskKeys);
   for (const predecessor of predecessors) {
-    for (const taskKey of predecessor.taskKeys) targets.add(taskKey);
+    for (const taskKey of predecessor.taskKeys) historicalTargets.add(taskKey);
   }
-  if (targets.size === 0 || targets.size > 20) return null;
+  if (historicalTargets.size > 20 && fact.trigger !== 'pr_merged') return null;
+  // A busy request must not lose its recorded links or its bounded signed merge references.
+  const inferredTargets = historicalTargets.size <= 20 ? historicalTargets : (taskKeys ?? []);
+  const targets =
+    fact.trigger === 'pr_merged'
+      ? new Set([...inferredTargets, ...fact.taskKeys])
+      : historicalTargets;
+  if (targets.size === 0) return null;
   return {
     mapping,
-    fact: { ...fact, taskKeys: [...targets] },
+    fact:
+      fact.trigger === 'pr_merged'
+        ? {
+            ...fact,
+            taskKeys: [...targets],
+            referencedTaskKeys: fact.taskKeys,
+          }
+        : { ...fact, taskKeys: [...targets] },
     ...(predecessors.length === 0 ? {} : { prerequisiteIds: predecessors.map(({ id }) => id) }),
   };
 }

@@ -21,9 +21,16 @@ export type VerifiedGitDelivery =
     } & (
       | { readonly trigger: 'branch'; readonly branch: string }
       | {
-          readonly trigger: 'pr_open' | 'pr_merged' | 'pr_closed';
+          readonly trigger: 'pr_open' | 'pr_closed';
           readonly requestNumber: number;
           readonly head?: GitRequestHead;
+        }
+      | {
+          readonly trigger: 'pr_merged';
+          readonly requestNumber: number;
+          readonly head?: GitRequestHead;
+          /** Signed references that can establish a link when no link was recorded previously. */
+          readonly referencedTaskKeys?: readonly string[];
         }
       | {
           readonly trigger: 'pr_head';

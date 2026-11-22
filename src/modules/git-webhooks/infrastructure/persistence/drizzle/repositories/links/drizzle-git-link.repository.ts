@@ -128,7 +128,12 @@ export class DrizzleGitLinkRepository {
     }
     if (
       current === undefined &&
-      (fact.trigger === 'pr_head' || fact.trigger === 'pr_checks' || fact.trigger === 'pr_closed')
+      (fact.trigger === 'pr_head' ||
+        fact.trigger === 'pr_checks' ||
+        fact.trigger === 'pr_closed' ||
+        (fact.trigger === 'pr_merged' &&
+          fact.referencedTaskKeys !== undefined &&
+          !fact.referencedTaskKeys.includes(taskKey)))
     ) {
       return null;
     }

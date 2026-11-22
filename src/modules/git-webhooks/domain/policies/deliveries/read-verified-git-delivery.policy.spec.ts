@@ -207,26 +207,33 @@ describe('readVerifiedGitDelivery', () => {
     });
   });
 
-  it('preserves a reference-free GitHub closure for lookup by request number', () => {
-    expect(
-      readVerifiedGitDelivery(githubBinding, {
-        ...githubPullRequest,
-        action: 'closed',
-        pull_request: {
-          ...githubPullRequest.pull_request,
-          state: 'closed',
-          head: { ...githubPullRequest.pull_request.head, ref: 'feature/sso' },
-          title: 'Login improvements',
-        },
-      }),
-    ).toEqual({
-      kind: 'actionable',
-      trigger: 'pr_closed',
-      requestNumber: 214,
-      taskKeys: [],
-      closingTaskKeys: [],
-    });
-  });
+  it.each([
+    [false, 'pr_closed'],
+    [true, 'pr_merged'],
+  ])(
+    'preserves a reference-free GitHub closure (merged: %s) for request lookup',
+    (merged, trigger) => {
+      expect(
+        readVerifiedGitDelivery(githubBinding, {
+          ...githubPullRequest,
+          action: 'closed',
+          pull_request: {
+            ...githubPullRequest.pull_request,
+            state: 'closed',
+            merged,
+            head: { ...githubPullRequest.pull_request.head, ref: 'feature/sso' },
+            title: 'Login improvements',
+          },
+        }),
+      ).toEqual({
+        kind: 'actionable',
+        trigger,
+        requestNumber: 214,
+        taskKeys: [],
+        closingTaskKeys: [],
+      });
+    },
+  );
 
   it.each([
     { ...githubPullRequest, action: 'synchronize' },
@@ -376,26 +383,32 @@ describe('readVerifiedGitDelivery', () => {
     });
   });
 
-  it('preserves a reference-free GitLab closure for lookup by request number', () => {
-    expect(
-      readVerifiedGitDelivery(gitlabBinding, {
-        ...gitlabMergeRequest,
-        object_attributes: {
-          ...gitlabMergeRequest.object_attributes,
-          action: 'close',
-          state: 'closed',
-          title: 'Login improvements',
-          last_commit: { message: 'Update the login screen' },
-        },
-      }),
-    ).toEqual({
-      kind: 'actionable',
-      trigger: 'pr_closed',
-      requestNumber: 31,
-      taskKeys: [],
-      closingTaskKeys: [],
-    });
-  });
+  it.each([
+    { action: 'close', state: 'closed', trigger: 'pr_closed' },
+    { action: 'merge', state: 'merged', trigger: 'pr_merged' },
+  ])(
+    'preserves a reference-free GitLab $action for request lookup',
+    ({ action, state, trigger }) => {
+      expect(
+        readVerifiedGitDelivery(gitlabBinding, {
+          ...gitlabMergeRequest,
+          object_attributes: {
+            ...gitlabMergeRequest.object_attributes,
+            action,
+            state,
+            title: 'Login improvements',
+            last_commit: { message: 'Update the login screen' },
+          },
+        }),
+      ).toEqual({
+        kind: 'actionable',
+        trigger,
+        requestNumber: 31,
+        taskKeys: [],
+        closingTaskKeys: [],
+      });
+    },
+  );
 
   it.each([
     { ...gitlabNewBranch, before: 'b'.repeat(40) },
@@ -481,5 +494,27 @@ describe('readVerifiedGitDelivery', () => {
         },
       }),
     ).toEqual({ kind: 'ignored' });
+  });
+
+  it('retains an oversized merge fact without selecting any signed task references', () => {
+    expect(
+      readVerifiedGitDelivery(githubBinding, {
+        ...githubPullRequest,
+        action: 'closed',
+        pull_request: {
+          ...githubPullRequest.pull_request,
+          state: 'closed',
+          merged: true,
+          body: Array.from({ length: 21 }, (_, index) => 'Closes CAD-' + String(index + 1)).join(
+            ' ',
+          ),
+        },
+      }),
+    ).toMatchObject({
+      kind: 'actionable',
+      trigger: 'pr_merged',
+      taskKeys: [],
+      closingTaskKeys: [],
+    });
   });
 });

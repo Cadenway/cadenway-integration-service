@@ -5,8 +5,8 @@ import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/de
 /** Locked receiver transaction for mapping resolution and atomic delivery admission. */
 export interface GitDeliveryTransaction {
   // #region Properties
-  /** Resolves a known delivery ID under the locked receiver before considering any new work. */
-  readonly checkDeliveryId: (
+  /** Checks the delivery ID and, for GitHub, the authenticated body under the receiver lock. */
+  readonly checkDelivery: (
     deliveryId: string,
     digest: string,
   ) => Promise<'new' | 'duplicate' | 'conflict'>;
@@ -28,7 +28,7 @@ export interface GitDeliveryTransaction {
     triggers: readonly ('pr_open' | 'pr_head' | 'pr_merged')[],
   ) => Promise<readonly { readonly id: string; readonly taskKeys: readonly string[] }[] | null>;
 
-  /** Admits a new ID checked in this transaction, reusing the existing receipt for a duplicate body. */
+  /** Records one first-seen delivery checked under the same receiver lock. */
   readonly admit: (input: {
     readonly deliveryId: string;
     readonly digest: string;
@@ -37,6 +37,6 @@ export interface GitDeliveryTransaction {
       readonly fact: Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
       readonly prerequisiteIds?: readonly string[];
     } | null;
-  }) => Promise<'accepted' | 'duplicate'>;
+  }) => Promise<'accepted'>;
   // #endregion
 }

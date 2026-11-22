@@ -72,20 +72,25 @@ export class DrizzleGitRequestPredecessorsRepository {
     );
   }
 
-  /** Checks whether a saved predecessor still needs to settle the same task. */
-  public async hasPendingForTask(
+  /** Lists the saved predecessors without a terminal decision for the same task. */
+  public async findUnsettledForTask(
     scope: TransactionScope<DatabaseSchema>,
     organizationId: string,
     prerequisiteIds: readonly string[],
     taskKey: string,
-  ): Promise<boolean> {
+  ): Promise<readonly { readonly id: string; readonly observesHead: boolean }[]> {
     if (scope.kind !== 'tenant' || scope.organizationId !== organizationId) {
       throw new Error('Git predecessor lookup does not belong to the tenant transaction.');
     }
     if (prerequisiteIds.length > 20) throw new Error('Git predecessor set exceeds its bound.');
-    if (prerequisiteIds.length === 0) return false;
-    const rows = await scope.db
-      .select({ id: gitWebhookDeliveries.id })
+    if (prerequisiteIds.length === 0) return [];
+    return scope.db
+      .select({
+        id: gitWebhookDeliveries.id,
+        observesHead: sql<boolean>`coalesce(
+          jsonb_typeof(${gitWebhookDeliveries.work} -> 'fact' -> 'head') = 'object', false
+        )`,
+      })
       .from(gitWebhookDeliveries)
       .where(
         and(
@@ -100,9 +105,7 @@ export class DrizzleGitRequestPredecessorsRepository {
                and ${gitDispatchClaims.status} in ('completed', 'closed')
           )`,
         ),
-      )
-      .limit(1);
-    return rows.length !== 0;
+      );
   }
   // #endregion
 }

@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule, createIntegrationApplication } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
 import { GIT_LINK_DISPATCH_QUEUE } from '../src/config/job-queues.js';
+import { DispatchGitDelivery } from '../src/modules/git-webhooks/application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
 // does not export its container fixtures yet and a service never depends on `testcontainers` itself,
@@ -61,6 +62,9 @@ const gitTaskIdsByPath = new Map([
   ['/internal/v1/tasks/CAD-483/git-status-actions', '01938f6e-0000-7000-8000-000000000066'],
   ['/internal/v1/tasks/CAD-484/git-status-actions', '01938f6e-0000-7000-8000-000000000067'],
   ['/internal/v1/tasks/CAD-485/git-status-actions', '01938f6e-0000-7000-8000-000000000068'],
+  ['/internal/v1/tasks/CAD-486/git-status-actions', '01938f6e-0000-7000-8000-000000000069'],
+  ['/internal/v1/tasks/CAD-487/git-status-actions', '01938f6e-0000-7000-8000-000000000070'],
+  ['/internal/v1/tasks/CAD-488/git-status-actions', '01938f6e-0000-7000-8000-000000000071'],
 ]);
 const gitFixtureKey = randomBytes(32).toString('hex');
 
@@ -549,6 +553,274 @@ describe('integration-service wiring', () => {
       },
       { timeout: 15_000 },
     );
+  });
+
+  it('resumes a signed check once its preceding opening is settled', async () => {
+    const taskKey = 'CAD-488';
+    const path = `/internal/v1/tasks/${taskKey}/git-status-actions`;
+    const tenant = service().get(TenantTransactionRunner);
+    const actor = await signer.sign('integration-service', {
+      actor: { type: 'system', id: 'api-gateway' },
+      organizationId: null,
+    });
+    const repository = { id: 81 };
+    const sha = 'a'.repeat(40);
+    const requestNumber = 227;
+    const pullRequest = {
+      number: requestNumber,
+      state: 'open',
+      merged: false,
+      head: { ref: 'cad-488-revision', sha, repo: repository },
+      base: { ref: 'main', repo: repository },
+      title: 'Révision CAD-488',
+      body: null,
+      updated_at: '2026-11-08T16:18:43Z',
+    };
+    const openingBody = JSON.stringify({
+      repository,
+      installation: { id: 41 },
+      action: 'opened',
+      number: requestNumber,
+      pull_request: pullRequest,
+    });
+    const checkBody = JSON.stringify({
+      repository,
+      installation: { id: 41 },
+      action: 'completed',
+      check_suite: {
+        id: 316,
+        status: 'completed',
+        conclusion: 'success',
+        head_branch: pullRequest.head.ref,
+        head_sha: sha,
+        updated_at: '2026-11-08T16:18:44Z',
+        pull_requests: [pullRequest],
+      },
+    });
+    const send = (body: string, deliveryId: string, event: string) =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/webhooks/github?bindingId=${gitReceiverId}`)
+        .set('Authorization', `Bearer ${actor}`)
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Delivery', deliveryId)
+        .set('X-GitHub-Event', event)
+        .set(
+          'X-Hub-Signature-256',
+          `sha256=${createHmac('sha256', gitFixtureKey).update(body).digest('hex')}`,
+        )
+        .send(body);
+    const query = (statement: string, values: readonly unknown[]) =>
+      runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+        tenant.run(({ client }) => client.query(statement, [...values])),
+      );
+    const events = () =>
+      query(
+        `select event_name, (payload->>'version')::int as version
+           from outbox_events where organization_id = $1 and payload->>'taskKey' = $2
+          order by version`,
+        [gitOrganizationId, taskKey],
+      );
+    const openingId = randomUUID();
+    const checkId = randomUUID();
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const producer = service().get(JobProducer);
+    const enqueue = vi.spyOn(producer, 'enqueue');
+    heldTaskReply = { path, released };
+    try {
+      await send(openingBody, openingId, 'pull_request').expect(204);
+      await vi.waitFor(
+        () => {
+          expect(taskCommands.some((command) => command.path === path)).toBe(true);
+        },
+        { timeout: 10_000, interval: 50 },
+      );
+      await send(checkBody, checkId, 'check_suite').expect(204);
+      const admitted = await query(
+        `select d.id, d.work->'prerequisiteIds' as prerequisites,
+                (select receipt_id from git_webhook_delivery_ids
+                  where organization_id = $1 and receiver_id = $2 and delivery_id = $3) as opening
+           from git_webhook_deliveries d join git_webhook_delivery_ids a
+             on (d.organization_id, d.id) = (a.organization_id, a.receipt_id)
+          where a.organization_id = $1 and a.receiver_id = $2 and a.delivery_id = $4`,
+        [gitOrganizationId, gitReceiverId, openingId, checkId],
+      );
+      const row = admitted.rows[0] as
+        { id: string; opening: string; prerequisites: readonly string[] } | undefined;
+      expect(row?.prerequisites).toEqual([row?.opening]);
+      if (row === undefined) throw new Error('The signed check was not admitted.');
+      await vi.waitFor(
+        () => {
+          const deferred = enqueue.mock.calls.filter(
+            ([, queue, payload, options]) =>
+              queue === GIT_LINK_DISPATCH_QUEUE.name &&
+              typeof payload === 'object' &&
+              payload !== null &&
+              'deliveryId' in payload &&
+              payload.deliveryId === row.id &&
+              options?.startAfter instanceof Date,
+          );
+          expect(deferred).not.toHaveLength(0);
+        },
+        { timeout: 12_000, interval: 50 },
+      );
+      await vi.waitFor(
+        async () => {
+          const deferredJob = await migrator.query(
+            `select id from pgboss.job
+              where name = $1 and data->>'organizationId' = $2
+                and data->'payload'->>'deliveryId' = $3 and data->'payload'->>'taskKey' = $4
+                and start_after > created_on`,
+            [GIT_LINK_DISPATCH_QUEUE.name, gitOrganizationId, row.id, taskKey],
+          );
+          expect(deferredJob.rows.length).toBeGreaterThan(0);
+        },
+        { timeout: 3_000, interval: 50 },
+      );
+      expect(
+        taskCommands.filter(({ path: commandPath, body }) =>
+          commandPath === path && typeof body === 'object' && body !== null && 'status' in body
+            ? body.status === null
+            : false,
+        ),
+      ).toEqual([]);
+      expect((await events()).rows).toEqual([]);
+
+      heldTaskReply = undefined;
+      release();
+      await service().get(DispatchGitDelivery).execute({
+        organizationId: gitOrganizationId,
+        deliveryId: row.opening,
+        taskKey,
+      });
+      await vi.waitFor(
+        async () => {
+          expect((await events()).rows).toEqual([
+            { event_name: 'git.pr-opened.v1', version: 1 },
+            { event_name: 'git.checks-completed.v1', version: 2 },
+          ]);
+        },
+        { timeout: 15_000, interval: 100 },
+      );
+      await send(checkBody, checkId, 'check_suite').expect(204);
+      expect((await events()).rows).toEqual([
+        { event_name: 'git.pr-opened.v1', version: 1 },
+        { event_name: 'git.checks-completed.v1', version: 2 },
+      ]);
+      const commands = taskCommands.filter(({ path: commandPath }) => commandPath === path);
+      const reviewKeys = commands
+        .filter(
+          ({ body }) =>
+            typeof body === 'object' &&
+            body !== null &&
+            'status' in body &&
+            body.status === 'review',
+        )
+        .map(({ key }) => key);
+      expect(new Set(reviewKeys).size).toBe(1);
+      expect(
+        commands.filter(
+          ({ body }) =>
+            typeof body === 'object' && body !== null && 'status' in body && body.status === null,
+        ),
+      ).toHaveLength(1);
+    } finally {
+      heldTaskReply = undefined;
+      release();
+      enqueue.mockRestore();
+    }
+  });
+
+  it('records a merge for both existing links and closes only the task still referenced', async () => {
+    const tenant = service().get(TenantTransactionRunner);
+    const token = await signer.sign('integration-service', {
+      actor: { type: 'system', id: 'api-gateway' },
+      organizationId: null,
+    });
+    const repository = { id: 81 };
+    const number = 226;
+    const send = (merged: boolean, deliveryId: string) => {
+      const payload = JSON.stringify({
+        repository,
+        installation: { id: 41 },
+        number,
+        action: merged ? 'closed' : 'opened',
+        pull_request: {
+          number,
+          state: merged ? 'closed' : 'open',
+          merged,
+          head: { ref: 'feature', repo: repository },
+          base: { ref: 'main', repo: repository },
+          title: merged ? 'Closes CAD-487' : 'Feature CAD-486 and CAD-487',
+        },
+      });
+      return request(service().getHttpServer())
+        .post(`/internal/v1/webhooks/github?bindingId=${gitReceiverId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Delivery', deliveryId)
+        .set('X-GitHub-Event', 'pull_request')
+        .set(
+          'X-Hub-Signature-256',
+          `sha256=${createHmac('sha256', gitFixtureKey).update(payload).digest('hex')}`,
+        )
+        .send(payload);
+    };
+    const events = () =>
+      runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+        tenant.run(({ client }) =>
+          client.query(
+            `select link.task_key, link.status, (event.payload->>'version')::int as version,
+                    event.event_name
+                from git_links link join outbox_events event
+                  on event.organization_id = link.organization_id
+                  and event.payload->>'gitLinkId' = link.id::text
+              where link.task_key in ('CAD-486', 'CAD-487')
+                and event.status = 'sent'
+              order by link.task_key, (event.payload->>'version')::int`,
+          ),
+        ),
+      );
+    await send(false, randomUUID()).expect(204);
+    await vi.waitFor(
+      async () => {
+        expect((await events()).rows).toEqual([
+          { task_key: 'CAD-486', status: 'open', version: 1, event_name: 'git.pr-opened.v1' },
+          { task_key: 'CAD-487', status: 'open', version: 1, event_name: 'git.pr-opened.v1' },
+        ]);
+      },
+      { timeout: 15_000, interval: 50 },
+    );
+
+    const mergeDeliveryId = randomUUID();
+    await send(true, mergeDeliveryId).expect(204);
+    await send(true, mergeDeliveryId).expect(204);
+    await vi.waitFor(
+      async () => {
+        expect((await events()).rows).toEqual([
+          { task_key: 'CAD-486', status: 'merged', version: 1, event_name: 'git.pr-opened.v1' },
+          { task_key: 'CAD-486', status: 'merged', version: 2, event_name: 'git.pr-merged.v1' },
+          { task_key: 'CAD-487', status: 'merged', version: 1, event_name: 'git.pr-opened.v1' },
+          { task_key: 'CAD-487', status: 'merged', version: 2, event_name: 'git.pr-merged.v1' },
+        ]);
+      },
+      { timeout: 15_000, interval: 50 },
+    );
+    for (const [taskKey, status] of [
+      ['CAD-486', null],
+      ['CAD-487', 'done'],
+    ] as const) {
+      expect(
+        taskCommands
+          .filter(({ path }) => path === `/internal/v1/tasks/${taskKey}/git-status-actions`)
+          .map(({ body }) => body),
+      ).toEqual([
+        expect.objectContaining({ status: 'review' }),
+        expect.objectContaining({ status }),
+      ]);
+    }
   });
 
   it('accepts one pending Git action for two signed deliveries of the same raw body', async () => {
