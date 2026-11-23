@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '@cadenway/nest-common';
 import { provisionJobs } from '@cadenway/nest-jobs/provisioning';
+import { finishOutboxLeaseMigration } from '@cadenway/nest-messaging/outbox/schema';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
@@ -42,7 +43,17 @@ if (!existsSync(`${migrationsFolder}/meta/_journal.json`)) {
     application_name: 'integration-service-migrator',
   });
   try {
-    await migrate(drizzle({ client: pool }), { migrationsFolder });
+    const client = await pool.connect();
+    try {
+      // Serialize Drizzle's journal and the concurrent index build on one migration session.
+      await client.query(
+        "select pg_advisory_lock(hashtextextended('integration-service:migrations', 0))",
+      );
+      await migrate(drizzle({ client }), { migrationsFolder });
+      await finishOutboxLeaseMigration(client);
+    } finally {
+      client.release(true);
+    }
     console.log('Migrations applied.');
   } finally {
     await pool.end();

@@ -3,4 +3,8 @@
 // the relay, the processed ids that make every handler run once per event, and the versions that
 // `claimVersion` raises. Their definition belongs to the kit and is never changed here; a new kit
 // version that changes them ships a migration note, applied with `pnpm migration:generate`.
-export { eventVersions, outboxEvents, processedEvents } from '@cadenway/nest-messaging/outbox';
+export {
+  eventVersions,
+  outboxEvents,
+  processedEvents,
+} from '@cadenway/nest-messaging/outbox/schema';

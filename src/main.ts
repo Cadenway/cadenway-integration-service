@@ -1,6 +1,6 @@
 import { loadConfig, runApplication } from '@cadenway/nest-common';
 
-import { createIntegrationApplication } from './app.module.js';
+import { createIntegrationApplication, runIntegrationGitBindingCommand } from './app.module.js';
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 
@@ -13,8 +13,13 @@ import type { AppConfig } from './config/app-config.js';
 // health probes requires an internal token whose `aud` is INTERNAL_TOKEN_AUDIENCE and whose
 // signature verifies with a key of INTERNAL_TOKEN_TRUSTED_ISSUERS; the organization of a request
 // comes from that token only.
-await runApplication({ service: 'integration-service' }, async (): Promise<void> => {
-  const config: Readonly<AppConfig> = loadConfig(appConfigSchema);
-  const app = await createIntegrationApplication(config);
-  await app.listen(config.PORT);
-});
+const [command, ...args] = process.argv.slice(2);
+if (command === 'git-binding') {
+  process.exitCode = await runIntegrationGitBindingCommand(args);
+} else {
+  await runApplication({ service: 'integration-service' }, async (): Promise<void> => {
+    const config: Readonly<AppConfig> = loadConfig(appConfigSchema);
+    const app = await createIntegrationApplication(config);
+    await app.listen(config.PORT);
+  });
+}

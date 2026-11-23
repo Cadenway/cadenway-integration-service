@@ -1,9 +1,14 @@
-import { CONFIG, InternalHttpClient, InternalTokenSigner } from '@cadenway/nest-common';
-import { TenantTransactionRunner, type DatabaseSchema } from '@cadenway/nest-common/database';
+import { CONFIG, InternalHttpClient, InternalTokenSigner, loadConfig } from '@cadenway/nest-common';
+import {
+  TenantTransactionRunner,
+  databaseConfigShape,
+  type DatabaseSchema,
+} from '@cadenway/nest-common/database';
 import { JobProducer, JobWorkerRegistry } from '@cadenway/nest-jobs/runtime';
 import { EventConsumers } from '@cadenway/nest-messaging';
 import { OutboxWriter } from '@cadenway/nest-messaging/outbox/writer';
 import { Module } from '@nestjs/common';
+import { z } from 'zod';
 
 import type { AppConfig } from '../../config/app-config.js';
 import {
@@ -14,6 +19,7 @@ import {
 import type { GitTaskAction } from './application/ports/outbound/actions/dispatch/git-task-action.port.js';
 import { decideGitCheckPrerequisites } from './application/models/dispatch/git-check-prerequisites.model.js';
 import { AdmitGitWebhook } from './application/use-cases/commands/deliveries/admit-git-webhook/admit-git-webhook.use-case.js';
+import { ManageGitWebhookBinding } from './application/use-cases/commands/bindings/manage-git-webhook-binding/manage-git-webhook-binding.use-case.js';
 import { DispatchGitDelivery } from './application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
 import { PurgeTaskGitLinks } from './application/use-cases/commands/purge/purge-task-git-links/purge-task-git-links.use-case.js';
 import { gitLinkIdentity } from './domain/policies/links/git-link-change.policy.js';
@@ -21,6 +27,7 @@ import { GitLinkChangedOutbox } from './infrastructure/messaging/outbox/links/gi
 import { DrizzleGitLinkRepository } from './infrastructure/persistence/drizzle/repositories/links/drizzle-git-link.repository.js';
 import { DrizzleGitDispatchUnitOfWork } from './infrastructure/persistence/drizzle/transactions/dispatch/drizzle-git-dispatch.unit-of-work.js';
 import { DrizzleGitAdmissionUnitOfWork } from './infrastructure/persistence/drizzle/transactions/deliveries/drizzle-git-admission.unit-of-work.js';
+import { DrizzleGitWebhookBindingUnitOfWork } from './infrastructure/persistence/drizzle/transactions/bindings/drizzle-git-webhook-binding.unit-of-work.js';
 import { DrizzleGitPurgeUnitOfWork } from './infrastructure/persistence/drizzle/transactions/purge/drizzle-git-purge.unit-of-work.js';
 import { GitDispatchJobsProducer } from './infrastructure/jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 import {
@@ -29,6 +36,7 @@ import {
 } from './infrastructure/adapters/provider-signatures/git-webhook-signature.adapter.js';
 import { GitTaskHttpAdapter } from './infrastructure/adapters/task-service/git-task-http.adapter.js';
 import { GitWebhooksController } from './presentation/http/controllers/deliveries/git-webhooks.controller.js';
+import { runGitWebhookBindingCommand } from './presentation/cli/commands/bindings/manage-git-webhook-binding.command.js';
 import { GitDispatchJobHandler } from './presentation/jobs/handlers/dispatch/git-dispatch.handler.js';
 import { GitPurgeJobHandler } from './presentation/jobs/handlers/purge/git-purge.handler.js';
 import { TaskPurgedHandler } from './presentation/messaging/handlers/purge/task-purged.handler.js';
@@ -169,4 +177,16 @@ async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
     },
   ],
 })
-export class GitWebhooksModule {}
+export class GitWebhooksModule {
+  // #region Methods
+  /** Runs a local operator command with only the application database connection. */
+  public static runBindingCommand(args: readonly string[]): Promise<number> {
+    return runGitWebhookBindingCommand(args, async (input) => {
+      const config = loadConfig(z.object({ DATABASE_URL: databaseConfigShape.DATABASE_URL }));
+      return DrizzleGitWebhookBindingUnitOfWork.withConnection(config.DATABASE_URL, (work) =>
+        new ManageGitWebhookBinding(work).execute(input),
+      );
+    });
+  }
+  // #endregion
+}
