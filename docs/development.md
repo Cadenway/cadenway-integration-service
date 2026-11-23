@@ -186,9 +186,12 @@ repository mapping cannot be reassigned through the command.
 Register before enabling the matching `GIT_WEBHOOK_RECEIVERS` entry and configuring the provider
 endpoint. During rotation, prepare the provider and Integration configuration for revision
 `N + 1`, then use `rotate` with `--revision N` to switch the database authority. The receiver stays
-unavailable on any replica whose credential revision does not match. The previous revision and
-any unsettled commands tied to it are fenced after the change. A retry of the same rotation is
-safe. Check a signed delivery at the new revision before retiring the old credential.
+unavailable on any replica whose credential revision does not match. The change prevents
+preparation and settlement at the previous revision. A Task request prepared before the change
+can still apply at Task. For a strict cutover, pause incoming deliveries and wait for queued
+and in-flight actions to settle before rotating or revoking the binding. Work fenced by an
+old revision is not recreated by replaying the same provider delivery. A retry of the same
+rotation is safe. Check a signed delivery at the new revision before retiring the old credential.
 
 To revoke, run `revoke` with `--revision` set to the active revision. Revocation preserves
 receipts and links and permanently disables the binding. Retiring the receiver entry and provider

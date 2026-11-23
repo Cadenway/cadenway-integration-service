@@ -93,7 +93,9 @@ terminal task purges.
   all of its target jobs commit together.
 - Operator changes use the same receiver row lock. Registration and its first mapping commit
   together, an identical mapping is safe to repeat, and revocation permanently disables the
-  binding ID. Rotation fences previous credentials and unsettled actions from older revisions.
+  binding ID. Rotation blocks admission and preparation at the previous revision. A Task request
+  whose preparation already committed can still complete after rotation or revocation, while
+  Integration rejects its obsolete settlement.
 - The receiver selects at most 20 tasks from existing links and prior accepted work for the same
   request. A merge combines that audience with up to 20 distinct signed task references. If pending
   work would exceed the historical limit, the merge keeps the bounded set of recorded links.

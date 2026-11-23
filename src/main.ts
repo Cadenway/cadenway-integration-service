@@ -16,10 +16,13 @@ import type { AppConfig } from './config/app-config.js';
 const [command, ...args] = process.argv.slice(2);
 if (command === 'git-binding') {
   process.exitCode = await runIntegrationGitBindingCommand(args);
-} else {
+} else if (command === undefined) {
   await runApplication({ service: 'integration-service' }, async (): Promise<void> => {
     const config: Readonly<AppConfig> = loadConfig(appConfigSchema);
     const app = await createIntegrationApplication(config);
     await app.listen(config.PORT);
   });
+} else {
+  console.error('Usage: node dist/main.js [git-binding <action> <options>]');
+  process.exitCode = 2;
 }
