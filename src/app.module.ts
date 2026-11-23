@@ -117,6 +117,11 @@ import { PlatformModule } from './modules/platform/platform.module.js';
 })
 export class AppModule {}
 
+/** Invokes the Git capability's operator command without starting the HTTP or broker listeners. */
+export function runIntegrationGitBindingCommand(args: readonly string[]): Promise<number> {
+  return GitWebhooksModule.runBindingCommand(args);
+}
+
 /** Applies private webhook routing, the shared raw body limit and internal-token verification. */
 export async function createIntegrationApplication(
   config: Readonly<AppConfig>,

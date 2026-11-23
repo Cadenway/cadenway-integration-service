@@ -6,7 +6,7 @@ Gives the tables of the service kit their place in this service's own migrations
 `src/modules/*/infrastructure/persistence/drizzle/schemas/*/*.schema.ts` only. A kit table enters the migration history through a schema re-export in this module. It owns:
 
 - `outbox_events`, `processed_events` and `event_versions`, defined by
-  `@cadenway/nest-messaging/outbox`;
+  `@cadenway/nest-messaging/outbox/schema`;
 - `idempotency_keys`, defined by `@cadenway/nest-common/database`.
 
 It holds no business rule, no use case, no route and no handler, and never will: product data and
@@ -66,6 +66,10 @@ and marks pending rows in system transactions, and purges sent rows after 7 days
 after 14.
 
 ## Decisions
+
+- The outbox lease fields and checks expand the schema while the current relay still writes
+  `pending`, `sent` and `failed`. The migrator builds the expiry index concurrently and validates
+  the checks after Drizzle commits.
 
 - Named `platform` because it holds the plumbing every Cadenway backend shares, not one capability:
   `outbox` or `messaging` would leave out `idempotency_keys`, and `kit` would suggest that the code

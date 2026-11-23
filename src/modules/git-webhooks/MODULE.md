@@ -10,6 +10,10 @@ repository and dispatches each referenced task through Task's internal Git comma
 API Gateway exposes the provider-facing endpoints. Signed system calls to Integration carry no
 organization. The receiver registration supplies the authoritative tenant.
 
+The Integration image provides the operator-only `node dist/main.js git-binding` command to
+register a binding and repository mapping, rotate its active signing revision or revoke the
+binding. See the [operator commands](../../../docs/development.md#git-binding-operations).
+
 ## Owned tables
 
 - `git_webhook_receivers` stores provider, tenant, current signing revision and enablement.
@@ -87,6 +91,11 @@ terminal task purges.
 - Admission locks the receiver, revalidates its revision and checks for duplicates before resolving
   the exact repository mapping under the tenant transaction. A fresh receipt, its delivery ID and
   all of its target jobs commit together.
+- Operator changes use the same receiver row lock. Registration and its first mapping commit
+  together, an identical mapping is safe to repeat, and revocation permanently disables the
+  binding ID. Rotation blocks admission and preparation at the previous revision. A Task request
+  whose preparation already committed can still complete after rotation or revocation, while
+  Integration rejects its obsolete settlement.
 - The receiver selects at most 20 tasks from existing links and prior accepted work for the same
   request. A merge combines that audience with up to 20 distinct signed task references. If pending
   work would exceed the historical limit, the merge keeps the bounded set of recorded links.

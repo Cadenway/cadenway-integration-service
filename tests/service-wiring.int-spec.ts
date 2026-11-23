@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { InternalTokenSigner, loadConfig, runWithOrganizationContext } from '@cadenway/nest-common';
@@ -15,6 +18,8 @@ import { JobProducer } from '@cadenway/nest-jobs/runtime';
 import { Controller, Get, Injectable, Module } from '@nestjs/common';
 import type { BeforeApplicationShutdown } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -35,6 +40,8 @@ const composeFile: string = fileURLToPath(new URL('../compose.dev.yaml', import.
 
 /** Throwaway project name: it never touches the data of the developer's own dev stack. */
 const project = `cadenway-integration-service-test-${String(process.pid)}`;
+const legacyOutboxId = randomUUID();
+const legacyOutboxTenantId = randomUUID();
 
 /**
  * Host port of NATS. Fixed for the run, unlike the ephemeral port of PostgreSQL: the service must
@@ -199,6 +206,41 @@ async function runMigrator(): Promise<void> {
   }
 }
 
+/** Queues a legacy outbox row on the immediately preceding production schema. */
+async function prepareLegacyOutbox(pool: pg.Pool): Promise<void> {
+  const source = fileURLToPath(new URL('../migrations', import.meta.url));
+  const temporary = await mkdtemp(join(tmpdir(), 'cadenway-integration-migrations-'));
+  try {
+    const journal = JSON.parse(await readFile(join(source, 'meta', '_journal.json'), 'utf8')) as {
+      readonly entries: readonly { readonly tag: string }[];
+    };
+    const last = journal.entries.findIndex(({ tag }) => tag === '0007_outbox_leases');
+    if (last < 0) throw new Error('The outbox lease expansion is missing from the journal.');
+    const entries = journal.entries.slice(0, last);
+    await mkdir(join(temporary, 'meta'));
+    await writeFile(
+      join(temporary, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries }),
+    );
+    for (const { tag } of entries) {
+      await copyFile(join(source, `${tag}.sql`), join(temporary, `${tag}.sql`));
+    }
+    await migrate(drizzle({ client: pool }), { migrationsFolder: temporary });
+    await runWithOrganizationContext(memberOf(legacyOutboxTenantId), () =>
+      new TenantTransactionRunner(pool).run(async ({ client }) => {
+        await client.query(
+          `insert into outbox_events (id, event_name, subject, stream, organization_id, payload)
+           values ($1, 'git.wiring-probe.v1', 'evt.git.wiring-probe.v1', 'EVENTS', $2,
+                   jsonb_build_object('id', $1::uuid::text, 'organizationId', $2::uuid::text))`,
+          [legacyOutboxId, legacyOutboxTenantId],
+        );
+      }),
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
 /** Releases the shutdown held by `ShutdownGate`. */
 let releaseShutdown: () => void = () => undefined;
 
@@ -308,7 +350,6 @@ describe('integration-service wiring', () => {
       'MIGRATION_DATABASE_URL',
       `postgres://integration_migrator:integration_migrator@127.0.0.1:${postgresPort}/integration`,
     );
-    await runMigrator();
     migrator = new pg.Pool({
       connectionString: `postgres://integration_migrator:integration_migrator@127.0.0.1:${postgresPort}/integration`,
       max: 1,
@@ -318,6 +359,8 @@ describe('integration-service wiring', () => {
     // The client is terminated (57P01) when a test stops PostgreSQL; the pool reports it as an
     // `error` event, which would otherwise be an uncaught exception.
     migrator.on('error', () => undefined);
+    await prepareLegacyOutbox(migrator);
+    await runMigrator();
 
     vi.stubEnv('PORT', '3018');
     vi.stubEnv('LOG_PRETTY', 'false');
@@ -422,7 +465,7 @@ describe('integration-service wiring', () => {
         tableowner: 'integration_migrator',
       })),
     );
-    expect(journal.rows).toEqual([{ applied: 7 }]);
+    expect(journal.rows).toEqual([{ applied: 8 }]);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -431,7 +474,7 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 7 }]);
+    expect(journal.rows).toEqual([{ applied: 8 }]);
   });
 
   it('retains a signed closure admitted before the earlier opening can record the link', async () => {
@@ -1339,10 +1382,33 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 7 }]);
+    expect(journal.rows).toEqual([{ applied: 8 }]);
   });
 
   it('publishes successive outbox events and remains ready', async () => {
+    const leases = await migrator.query(
+      `select
+         (select indisvalid from pg_index where indexrelid = 'public.outbox_events_lease_expiry_index'::regclass) as index_valid,
+         (select count(*)::int from pg_constraint where conrelid = 'public.outbox_events'::regclass
+          and conname in ('outbox_events_lease_check', 'outbox_events_status_check') and convalidated)
+         as validated_checks`,
+    );
+    expect(leases.rows).toEqual([{ index_valid: true, validated_checks: 2 }]);
+    const outbox = service().get(SystemTransactionRunner);
+    await vi.waitFor(
+      async () => {
+        const legacy = await outbox.run(({ client }) =>
+          client.query(
+            'select status, lease_token, lease_expires_at from outbox_events where id = $1',
+            [legacyOutboxId],
+          ),
+        );
+        expect(legacy.rows).toEqual([
+          { status: 'sent', lease_token: null, lease_expires_at: null },
+        ]);
+      },
+      { timeout: 10_000, interval: 100 },
+    );
     const tenant = service().get(TenantTransactionRunner);
     const system = service().get(SystemTransactionRunner);
     for (let pass = 0; pass < 2; pass += 1) {

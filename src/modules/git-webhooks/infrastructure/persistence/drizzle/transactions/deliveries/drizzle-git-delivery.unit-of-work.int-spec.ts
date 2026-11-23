@@ -12,6 +12,8 @@ import { DrizzleGitDeliveryTransaction } from './drizzle-git-delivery.unit-of-wo
 import type { GitTaskAction } from '../../../../../application/ports/outbound/actions/dispatch/git-task-action.port.js';
 import { decideGitCheckPrerequisites } from '../../../../../application/models/dispatch/git-check-prerequisites.model.js';
 import { DispatchGitDelivery } from '../../../../../application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
+import { ManageGitWebhookBinding } from '../../../../../application/use-cases/commands/bindings/manage-git-webhook-binding/manage-git-webhook-binding.use-case.js';
+import { DrizzleGitWebhookBindingUnitOfWork } from '../bindings/drizzle-git-webhook-binding.unit-of-work.js';
 import type { GitDispatchJobsProducer } from '../../../../jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 import { DrizzleGitDispatchUnitOfWork } from '../dispatch/drizzle-git-dispatch.unit-of-work.js';
 
@@ -89,6 +91,40 @@ describe('Git delivery persistence', () => {
   afterAll(async () => {
     await pool?.end();
     compose('down', '--volumes', '--remove-orphans');
+  });
+
+  it('registers, rotates and revokes one binding without exposing it to another tenant', async () => {
+    const bindingId = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e21';
+    const identity = { organizationId: organization, bindingId, provider: 'github' } as const;
+    const registration = {
+      ...identity,
+      action: 'register',
+      revision: 1,
+      integrationId: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e22',
+      spaceId: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e23',
+      mappingAuthorUserId: actor,
+      repositoryId: 111,
+      installationId: 222,
+    } as const;
+    const bindings = new ManageGitWebhookBinding(new DrizzleGitWebhookBindingUnitOfWork(runner));
+    expect(
+      await Promise.all([bindings.execute(registration), bindings.execute(registration)]),
+    ).toEqual([true, true]);
+    expect(await bindings.execute({ ...registration, organizationId: otherOrganization })).toBe(
+      false,
+    );
+    expect(await bindings.execute({ ...registration, spaceId: bindingId })).toBe(false);
+
+    const rotate = { ...identity, action: 'rotate', revision: 1 } as const;
+    expect(await Promise.all([bindings.execute(rotate), bindings.execute(rotate)])).toEqual([
+      true,
+      true,
+    ]);
+    expect(await bindings.execute({ ...identity, action: 'revoke', revision: 1 })).toBe(false);
+    expect(await bindings.execute({ ...identity, action: 'revoke', revision: 2 })).toBe(true);
+    expect(await bindings.execute({ ...identity, action: 'revoke', revision: 2 })).toBe(true);
+    expect(await bindings.execute({ ...registration, revision: 2 })).toBe(false);
+    expect(await bindings.execute({ ...rotate, revision: 2 })).toBe(false);
   });
 
   it('retains only the admitted GitHub delivery ID across concurrent body duplicates', async () => {

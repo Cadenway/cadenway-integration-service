@@ -162,6 +162,46 @@ PostgreSQL is down and from the start of a shutdown, back to 200 once NATS retur
 internal token. It moves to the fixtures of `@cadenway/nest-testing` once that
 package exports them.
 
+## Git binding operations
+
+Run the command from the built Integration image in a trusted operator session with its regular
+`DATABASE_URL` configured for `integration_app`. Apply the regular migration first. The command
+starts neither HTTP nor NATS. Pass the organization, receiver binding, provider and expected
+revision on every invocation. Only pass non-secret identifiers. Signing credentials are managed
+through the deployment configuration.
+
+```sh
+node dist/main.js git-binding register \
+  --organization "$ORGANIZATION_ID" --binding "$BINDING_ID" --provider github --revision 1 \
+  --repository "$GITHUB_REPOSITORY_ID" --installation "$GITHUB_INSTALLATION_ID" \
+  --integration "$INTEGRATION_ID" --space "$SPACE_ID" --author "$MAPPING_AUTHOR_USER_ID"
+```
+
+Use a fresh UUIDv7 binding ID for a new receiver. A GitLab binding uses `--provider gitlab` and
+omits `--installation`. The author is the account whose current task access is checked by Task
+when the mapping runs. Repeating a registration with identical metadata is safe. To add another
+repository, use its provider IDs with the same binding and current revision. An existing
+repository mapping cannot be reassigned through the command.
+
+Register before enabling the matching `GIT_WEBHOOK_RECEIVERS` entry and configuring the provider
+endpoint. During rotation, prepare the provider and Integration configuration for revision
+`N + 1`, then use `rotate` with `--revision N` to switch the database authority. The receiver stays
+unavailable on any replica whose credential revision does not match. The change prevents
+preparation and settlement at the previous revision. A Task request prepared before the change
+can still apply at Task. For a strict cutover, pause incoming deliveries and wait for queued
+and in-flight actions to settle before rotating or revoking the binding. Work fenced by an
+old revision is not recreated by replaying the same provider delivery. A retry of the same
+rotation is safe. Check a signed delivery at the new revision before retiring the old credential.
+
+To revoke, run `revoke` with `--revision` set to the active revision. Revocation preserves
+receipts and links and permanently disables the binding. Retiring the receiver entry and provider
+endpoint can then happen independently. Use a new binding ID for a new registration. Both
+`rotate` and `revoke` take only the receiver identifiers and revision.
+
+Exit status 0 means the desired command is applied. Status 1 means a conflict or database
+failure. Status 2 means invalid command metadata. Conflict output does not disclose the
+organization that owns another binding.
+
 ## Minimum checks by change
 
 The scripts below are this repository's contract. While the repository is being bootstrapped,
