@@ -256,10 +256,12 @@ export const getTaskServiceInternalRoutes = (fetchFn: typeof globalThis.fetch = 
    * `task-service` audience and organization. Integration verifies the original provider
    * delivery, resolves its current active repository mapping and status rule, and binds the
    * request to the normalized delivery, verified provider and mapped space before calling Task.
-   * The mapping carries the user who authorized it. Task verifies the task, list and space are
+   * The mapping carries the user who authorized it. Task reads that user's current membership
+   * from Organization before acting or returning a replay and verifies the task, list and space are
    * active in the signed organization, rechecks that the task is currently in that mapped space
-   * and that the authorizing user still has edit permission on it, in the transaction that
-   * locks and changes the task. The mapping author supplies permission evidence only.
+   * and that the matching local membership still gives the authorizing user edit permission on
+   * it, in the transaction that locks and changes the task. The mapping author supplies
+   * permission evidence only.
    *
    * The default rules map a branch or first commit to `progress`, an opened PR or MR to
    * `review` (for example, PR #214 for CAD-482), and a merged PR or MR to `done`.
