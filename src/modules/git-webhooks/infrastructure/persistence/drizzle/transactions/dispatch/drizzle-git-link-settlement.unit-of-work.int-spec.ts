@@ -87,6 +87,7 @@ function claim(
   taskKey: string,
   requestNumber: number,
   fact: Partial<GitDispatchClaim['fact']> & Pick<GitDispatchClaim['fact'], 'trigger'>,
+  mergeIntent = true,
 ): GitDispatchClaim {
   sequence += 1;
   const suffix = sequence.toString(16).padStart(12, '0');
@@ -104,6 +105,7 @@ function claim(
       closingTaskKeys: [taskKey],
       ...fact,
     } as GitDispatchClaim['fact'],
+    mergeIntent,
   };
 }
 
@@ -293,6 +295,13 @@ describe('Git link settlement, merge intents and the link read', () => {
       { name: GIT_LINK_UPDATED_V1, version: 3, changed: ['additions'] },
     ]);
     expect(await intentOf('CAD-483')).toEqual([expect.objectContaining({ status: 'pending' })]);
+  });
+
+  it('records the merge status a receipt from an earlier release sent with its dispatch', async () => {
+    await settle(claim('CAD-491', 222, { trigger: 'pr_merged' }, false));
+    const [intent] = await intentOf('CAD-491');
+    expect(intent).toMatchObject({ status: 'handled', disposition: 'no_op', reason: null });
+    expect(await intentJobs(intent?.link_id ?? '')).toEqual([]);
   });
 
   it('records a merge without a closing verb as handled with nothing to submit', async () => {

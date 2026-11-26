@@ -62,6 +62,8 @@ export class DrizzleGitLinkSettlement {
       taskKey: claim.taskKey,
       mapping: claim.mapping,
       targetStatus: claim.fact.closingTaskKeys.includes(claim.taskKey) ? 'done' : null,
+      // A receipt from an earlier release sent its status with the dispatch Task just confirmed.
+      ...(claim.mergeIntent ? {} : { confirmed: placement.disposition }),
     });
     if (intent === 'pending') await this.jobs.enqueue(scope, link.id, 1);
   }

@@ -166,7 +166,7 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
   public async admit(input: Parameters<GitDeliveryTransaction['admit']>[0]): Promise<'accepted'> {
     const work: typeof gitWebhookDeliveries.$inferSelect.work =
       input.work !== null && this.links !== undefined
-        ? { ...input.work, recordLink: true as const }
+        ? { ...input.work, recordLink: true as const, mergeIntent: true as const }
         : input.work;
     const [receipt] = await this.scope.db
       .insert(gitWebhookDeliveries)

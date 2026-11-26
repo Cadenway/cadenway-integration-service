@@ -17,10 +17,11 @@ const statuses = {
 /**
  * Dispatches one authenticated delivery target through Task's idempotent command.
  *
- * A merge only authorizes its link here, under a command key of its own: its `done` status is
- * the link's merge intent, recorded with the link change and submitted apart under the claim's
- * key ("Merge intent", Integration AsyncAPI), so no ordering rule can drop it and a later merge
- * delivery submits nothing.
+ * When the receipt records links, a merge only authorizes its link here, under a command key of
+ * its own: its `done` status is the link's merge intent, recorded with the link change and
+ * submitted apart under the claim's key ("Merge intent", Integration AsyncAPI), so no ordering
+ * rule can drop it and a later merge delivery submits nothing. A status-only receipt, and one
+ * admitted by an earlier release, keeps sending the merge status under the claim's own key.
  */
 export class DispatchGitDelivery {
   // #region Constructor
@@ -43,11 +44,16 @@ export class DispatchGitDelivery {
     if (claim.taskKey !== input.taskKey || !claim.fact.taskKeys.includes(input.taskKey)) {
       throw new Error('The reserved Git delivery target does not match the task.');
     }
-    const authorization =
-      claim.fact.trigger === 'pr_merged'
-        ? { ...claim, commandKey: `${claim.commandKey}:link` }
-        : claim;
-    const result = await this.task.apply(authorization, statuses[claim.fact.trigger]);
+    const merge = claim.fact.trigger === 'pr_merged';
+    const intent = merge && claim.mergeIntent;
+    const status =
+      merge && !intent
+        ? claim.fact.closingTaskKeys.includes(input.taskKey)
+          ? 'done'
+          : null
+        : statuses[claim.fact.trigger];
+    const authorization = intent ? { ...claim, commandKey: `${claim.commandKey}:link` } : claim;
+    const result = await this.task.apply(authorization, status);
     if (result.disposition !== 'unavailable' && result.spaceId !== claim.mapping.spaceId) {
       throw new Error('The Task receipt does not match the authorized mapped space.');
     }

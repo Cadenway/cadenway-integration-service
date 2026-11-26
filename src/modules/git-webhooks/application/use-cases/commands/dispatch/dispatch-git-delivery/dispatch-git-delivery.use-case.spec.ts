@@ -29,6 +29,7 @@ const claim = {
     taskKeys: ['CAD-482', 'CAD-483'],
     closingTaskKeys: [],
   },
+  mergeIntent: true,
 } satisfies GitDispatchClaim;
 const taskReceipt = {
   disposition: 'applied' as const,
@@ -101,6 +102,24 @@ describe('DispatchGitDelivery', () => {
         claim: current,
         result: receipt,
       });
+    },
+  );
+
+  it.each([
+    ['CAD-482', 'done'],
+    ['CAD-483', null],
+  ] as const)(
+    'keeps the direct merge status under the claim key for a status-only or earlier receipt (closing %s)',
+    async (closingTaskKey, status) => {
+      const { command, task, work } = setup();
+      const current: GitDispatchClaim = {
+        ...claim,
+        fact: { ...claim.fact, trigger: 'pr_merged', closingTaskKeys: [closingTaskKey] },
+        mergeIntent: false,
+      };
+      vi.mocked(work.prepare).mockResolvedValue({ status: 'ready', claim: current });
+      await expect(command.execute(input)).resolves.toEqual({ status: 'completed' });
+      expect(task.apply).toHaveBeenCalledExactlyOnceWith(current, status);
     },
   );
 

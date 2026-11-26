@@ -16,5 +16,11 @@ export interface GitDispatchClaim {
   readonly receiverRevision: number;
   readonly mapping: GitDeliveryMapping;
   readonly fact: Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
+
+  /**
+   * Whether the receipt records a merge status as the link's merge intent. A status-only receipt,
+   * and a receipt admitted by an earlier release, sends the merge status with its dispatch.
+   */
+  readonly mergeIntent: boolean;
   // #endregion
 }

@@ -35,6 +35,8 @@ export const gitWebhookDeliveries = pgTable(
       readonly fact: Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
       readonly prerequisiteIds?: readonly string[];
       readonly recordLink?: true;
+      /** Set since link recording keeps the merge status as the link's merge intent. */
+      readonly mergeIntent?: true;
     } | null>(),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),

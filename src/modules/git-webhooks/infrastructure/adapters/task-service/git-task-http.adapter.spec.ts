@@ -35,6 +35,7 @@ const claim: GitDispatchClaim = {
     taskKeys: ['CAD-482'],
     closingTaskKeys: [],
   },
+  mergeIntent: true,
 };
 
 const receipt = {

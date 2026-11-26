@@ -300,6 +300,7 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
       receiverRevision: delivery.receiverRevision,
       mapping: delivery.work.mapping,
       fact: delivery.work.fact,
+      mergeIntent: delivery.work.recordLink === true && delivery.work.mergeIntent === true,
     };
   }
   // #endregion
