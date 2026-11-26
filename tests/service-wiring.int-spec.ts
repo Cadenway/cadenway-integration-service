@@ -26,7 +26,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule, createIntegrationApplication } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
-import { GIT_LINK_DISPATCH_QUEUE } from '../src/config/job-queues.js';
+import { ListTaskGitLinksInternalResponse } from '@cadenway/contracts/validators/internal/integration-service';
+
+import { GIT_LINK_DISPATCH_QUEUE, GIT_LINK_MAINTENANCE_QUEUE } from '../src/config/job-queues.js';
 import { DispatchGitDelivery } from '../src/modules/git-webhooks/application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
@@ -42,6 +44,11 @@ const composeFile: string = fileURLToPath(new URL('../compose.dev.yaml', import.
 const project = `cadenway-integration-service-test-${String(process.pid)}`;
 const legacyOutboxId = randomUUID();
 const legacyOutboxTenantId = randomUUID();
+/** A request link recorded by the release before the Git link projection, closed on its head. */
+const legacyLinkTenantId = '01938f6e-0000-7000-8000-0000000000a1';
+const legacyLinkReceiverId = '01938f6e-0000-7000-8000-0000000000a2';
+const legacyLinkTaskId = '01938f6e-0000-7000-8000-0000000000a3';
+const legacyHeadObservedAtMs = Date.UTC(2026, 10, 7, 15, 0);
 
 /**
  * Host port of NATS. Fixed for the run, unlike the ephemeral port of PostgreSQL: the service must
@@ -238,6 +245,38 @@ async function prepareLegacyOutbox(pool: pg.Pool): Promise<void> {
         );
       }),
     );
+    await runWithOrganizationContext(memberOf(legacyLinkTenantId), () =>
+      new TenantTransactionRunner(pool).run(async ({ client }) => {
+        await client.query(
+          "insert into git_webhook_receivers (organization_id, id, provider) values ($1, $2, 'github')",
+          [legacyLinkTenantId, legacyLinkReceiverId],
+        );
+        await client.query(
+          `insert into git_links
+             (organization_id, receiver_id, provider, task_id, task_key, identity_hash, identity,
+              status, version, head_sha, head_first_observed_at_ms, head_last_observed_at_ms,
+              checks_attempt_id, checks_completed_at_ms)
+           values ($1, $2, 'github', $3, 'CAD-497', $4, $5::jsonb, 'closed', 3, $6, $7, $7, 11, $8)`,
+          [
+            legacyLinkTenantId,
+            legacyLinkReceiverId,
+            legacyLinkTaskId,
+            'a'.repeat(64),
+            JSON.stringify({
+              organizationId: legacyLinkTenantId,
+              receiverId: legacyLinkReceiverId,
+              binding: { provider: 'github', repositoryId: 91, installationId: 51 },
+              taskId: legacyLinkTaskId,
+              kind: 'pull-request',
+              requestNumber: 31,
+            }),
+            'b'.repeat(40),
+            legacyHeadObservedAtMs,
+            legacyHeadObservedAtMs + 60_000,
+          ],
+        );
+      }),
+    );
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -273,6 +312,7 @@ class WiringProbeController {
 
 describe('integration-service wiring', () => {
   const gateway = keyPair();
+  const automation = keyPair();
   const integration = keyPair();
   const taskCommands: {
     path: string | undefined;
@@ -395,7 +435,10 @@ describe('integration-service wiring', () => {
     );
     vi.stubEnv(
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
-      JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
+      JSON.stringify({
+        'api-gateway': [gateway.publicJwk],
+        'automation-service': [automation.publicJwk],
+      }),
     );
 
     @Module({
@@ -1272,6 +1315,135 @@ describe('integration-service wiring', () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ reached: true });
+  });
+
+  it('completes the Git link projection migration on links recorded before it', async () => {
+    const indexes = await migrator.query<{ relname: string; valid: boolean }>(
+      `select c.relname, i.indisvalid as valid from pg_index i join pg_class c on c.oid = i.indexrelid
+        where c.relname in ('git_links_task_page_index', 'git_links_head_lookup_index',
+                            'git_links_reconciliation_index')
+        order by c.relname`,
+    );
+    expect(indexes.rows).toEqual([
+      { relname: 'git_links_head_lookup_index', valid: true },
+      { relname: 'git_links_reconciliation_index', valid: true },
+      { relname: 'git_links_task_page_index', valid: true },
+    ]);
+    const unvalidated = await migrator.query(
+      `select conname from pg_constraint
+        where conrelid = 'public.git_links'::regclass and not convalidated`,
+    );
+    expect(unvalidated.rows).toEqual([]);
+
+    const tenant = service().get(TenantTransactionRunner);
+    const stored = await runWithOrganizationContext(memberOf(legacyLinkTenantId), () =>
+      tenant.run(({ client }) =>
+        client.query(
+          `select lifecycle_observed_at_ms::double precision as lifecycle, member_observed_at_ms,
+                  checks, checks_completed_at_ms::double precision as completed
+             from git_links where task_key = 'CAD-497'`,
+        ),
+      ),
+    );
+    expect(stored.rows).toEqual([
+      {
+        lifecycle: legacyHeadObservedAtMs,
+        member_observed_at_ms: {},
+        checks: null,
+        completed: legacyHeadObservedAtMs + 60_000,
+      },
+    ]);
+    const token = await signer.sign('integration-service', {
+      actor: { type: 'user', id: camilleMartinId },
+      organizationId: legacyLinkTenantId,
+    });
+    const response = await request(service().getHttpServer())
+      .get('/internal/v1/tasks/CAD-497/git-links')
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    const page = ListTaskGitLinksInternalResponse.parse(response.body);
+    expect(page).toMatchObject({
+      items: [
+        {
+          taskKey: 'CAD-497',
+          kind: 'pull-request',
+          state: 'closed',
+          number: 31,
+          providerRepositoryId: 91,
+          headSha: 'b'.repeat(40),
+          // A completion recorded without an aggregate is not returned.
+          checksCompletedAt: null,
+          version: 3,
+        },
+      ],
+      nextCursor: null,
+    });
+    expect(page.items[0]).not.toHaveProperty('checks');
+  });
+
+  it('guards the task Git link read with the issuer, actor and organization of the contract', async () => {
+    const read = (token?: string) => {
+      const call = request(service().getHttpServer()).get('/internal/v1/tasks/CAD-497/git-links');
+      return token === undefined ? call : call.set('Authorization', `Bearer ${token}`);
+    };
+    const automationSigner = await InternalTokenSigner.create({
+      issuer: 'automation-service',
+      privateJwk: automation.privateJwk,
+    });
+    const cases = [
+      [undefined, 401, 'auth.token-missing'],
+      [
+        await automationSigner.sign('integration-service', {
+          actor: { type: 'user', id: camilleMartinId },
+          organizationId: legacyLinkTenantId,
+        }),
+        403,
+        'auth.issuer-not-allowed',
+      ],
+      [
+        await signer.sign('integration-service', {
+          actor: { type: 'system', id: 'api-gateway' },
+          organizationId: legacyLinkTenantId,
+        }),
+        403,
+        'auth.actor-not-allowed',
+      ],
+      [
+        await signer.sign('integration-service', {
+          actor: { type: 'user', id: camilleMartinId },
+          organizationId: null,
+        }),
+        403,
+        'auth.organization-required',
+      ],
+    ] as const;
+    for (const [token, status, code] of cases) {
+      const response = await read(token);
+      expect({ status: response.status, code: (response.body as { code?: string }).code }).toEqual({
+        status,
+        code,
+      });
+    }
+    // Another organization reads no link of CAD-497.
+    const other = await read(
+      await signer.sign('integration-service', {
+        actor: { type: 'user', id: camilleMartinId },
+        organizationId: atelierNordId,
+      }),
+    );
+    expect(other.status).toBe(200);
+    expect(other.body).toEqual({ items: [], nextCursor: null });
+  });
+
+  it('runs the merge intent worker and schedules the link maintenance', async () => {
+    const schedules = await migrator.query(
+      'select name, cron, timezone from pgboss.schedule where name = $1',
+      [GIT_LINK_MAINTENANCE_QUEUE.name],
+    );
+    expect(schedules.rows).toEqual([
+      { name: GIT_LINK_MAINTENANCE_QUEUE.name, cron: '17 * * * *', timezone: 'UTC' },
+    ]);
   });
 
   it('refuses a token signed for another service', async () => {

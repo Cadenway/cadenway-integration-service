@@ -35,6 +35,10 @@ export const gitMergeIntents = pgTable(
     disposition: text('disposition').$type<'applied' | 'no_op'>(),
     reason: text('reason'),
     attempts: bigint('attempts', { mode: 'number' }).notNull().default(0),
+    /** Start of Task's receipt window: the earlier of the dispatch claim and the intent. */
+    windowStartedAt: timestamp('window_started_at', { withTimezone: true, precision: 3 })
+      .notNull()
+      .defaultNow(),
     reportedAt: timestamp('reported_at', { withTimezone: true, precision: 3 }),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
@@ -46,7 +50,7 @@ export const gitMergeIntents = pgTable(
       foreignColumns: [gitLinks.organizationId, gitLinks.id],
     }).onDelete('cascade'),
     index('git_merge_intents_pending_index')
-      .on(table.createdAt)
+      .on(table.windowStartedAt)
       .where(sql`${table.status} = 'pending' and ${table.reportedAt} is null`),
     check(
       'git_merge_intents_task_key_check',

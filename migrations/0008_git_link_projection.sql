@@ -42,6 +42,7 @@ CREATE TABLE "git_merge_intents" (
 	"disposition" text,
 	"reason" text,
 	"attempts" bigint DEFAULT 0 NOT NULL,
+	"window_started_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
 	"reported_at" timestamp (3) with time zone,
 	"created_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
@@ -93,19 +94,15 @@ ALTER TABLE "git_links" ADD COLUMN "member_admission_sequence" jsonb DEFAULT '{}
 --> statement-breakpoint
 ALTER TABLE "git_links" ADD COLUMN "reconciliation_pending_since" timestamp (3) with time zone;
 --> statement-breakpoint
+ALTER TABLE "git_links" ADD COLUMN "reconciliation_reported_at" timestamp (3) with time zone;
+--> statement-breakpoint
 ALTER TABLE "git_check_observations" ADD CONSTRAINT "git_check_observations_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk" FOREIGN KEY ("organization_id","receiver_id","provider") REFERENCES "public"."git_webhook_receivers"("organization_id","id","provider") ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint
 ALTER TABLE "git_merge_intents" ADD CONSTRAINT "git_merge_intents_organization_id_link_id_git_links_organization_id_id_fk" FOREIGN KEY ("organization_id","link_id") REFERENCES "public"."git_links"("organization_id","id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
 CREATE INDEX "git_check_observations_updated_index" ON "git_check_observations" USING btree ("updated_at");
 --> statement-breakpoint
-CREATE INDEX "git_merge_intents_pending_index" ON "git_merge_intents" USING btree ("created_at") WHERE "git_merge_intents"."status" = 'pending' and "git_merge_intents"."reported_at" is null;
---> statement-breakpoint
-CREATE INDEX "git_links_task_page_index" ON "git_links" USING btree ("organization_id","task_key","created_at" DESC NULLS LAST,"id" DESC NULLS LAST);
---> statement-breakpoint
-CREATE INDEX "git_links_head_lookup_index" ON "git_links" USING btree ("organization_id","receiver_id","head_sha") WHERE "git_links"."head_sha" is not null;
---> statement-breakpoint
-CREATE INDEX "git_links_reconciliation_index" ON "git_links" USING btree ("reconciliation_pending_since") WHERE "git_links"."reconciliation_pending_since" is not null;
+CREATE INDEX "git_merge_intents_pending_index" ON "git_merge_intents" USING btree ("window_started_at") WHERE "git_merge_intents"."status" = 'pending' and "git_merge_intents"."reported_at" is null;
 --> statement-breakpoint
 ALTER TABLE "git_links" ADD CONSTRAINT "git_links_checks_completed_check" CHECK ("git_links"."checks_completed_at_ms" is null or "git_links"."checks_completed_at_ms" between 0 and 9007199254740991) NOT VALID;
 --> statement-breakpoint

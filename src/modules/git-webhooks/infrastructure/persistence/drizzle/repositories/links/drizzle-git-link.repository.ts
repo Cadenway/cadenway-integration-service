@@ -411,9 +411,9 @@ function toColumns(
     checks: projection.checks,
     checksCompletedAtMs: projection.checksCompletedAtMs,
     ...(reconciliation === 'marked'
-      ? { reconciliationPendingSince: sql`now()` }
+      ? { reconciliationPendingSince: sql`now()`, reconciliationReportedAt: null }
       : reconciliation === 'cleared'
-        ? { reconciliationPendingSince: null }
+        ? { reconciliationPendingSince: null, reconciliationReportedAt: null }
         : {}),
   };
 }

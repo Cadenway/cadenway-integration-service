@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 
 import {
@@ -82,20 +83,28 @@ function inOrganization<T>(work: () => Promise<T>, organization = organizationId
 
 let sequence = 0;
 
+/** A UUIDv7 created at `atMs`, as PostgreSQL assigns receipts and claims. */
+function uuidv7(atMs = Date.now()): string {
+  const time = atMs.toString(16).padStart(12, '0');
+  const random = randomBytes(10).toString('hex');
+  const variant = (8 + (Number.parseInt(random.slice(3, 4), 16) % 4)).toString(16);
+  return `${time.slice(0, 8)}-${time.slice(8, 12)}-7${random.slice(0, 3)}-${variant}${random.slice(4, 7)}-${random.slice(7, 19)}`;
+}
+
 /** A dispatch claim of one admitted delivery for CAD-482, as the dispatch unit of work builds it. */
 function claim(
   taskKey: string,
   requestNumber: number,
   fact: Partial<GitDispatchClaim['fact']> & Pick<GitDispatchClaim['fact'], 'trigger'>,
   mergeIntent = true,
+  claimedAtMs = Date.now(),
 ): GitDispatchClaim {
   sequence += 1;
-  const suffix = sequence.toString(16).padStart(12, '0');
   return {
     organizationId,
-    deliveryId: `019a7100-0000-7000-8000-${suffix}`,
+    deliveryId: uuidv7(claimedAtMs),
     admissionSequence: sequence,
-    commandKey: `019a7200-0000-7000-8000-${suffix}`,
+    commandKey: uuidv7(claimedAtMs),
     taskKey,
     receiverRevision: 1,
     mapping,
@@ -182,7 +191,11 @@ describe('Git link settlement, merge intents and the link read', () => {
       jobs,
     );
     intents = new DrizzleGitMergeIntentUnitOfWork(runner, jobs);
-    maintenance = new DrizzleGitLinkMaintenanceUnitOfWork(new SystemTransactionRunner(pool));
+    maintenance = new DrizzleGitLinkMaintenanceUnitOfWork(
+      new SystemTransactionRunner(pool),
+      runner,
+      jobs,
+    );
     reader = new DrizzleTaskGitLinkReader(runner);
     for (const tenant of [organizationId]) {
       await inOrganization(
@@ -385,7 +398,7 @@ describe('Git link settlement, merge intents and the link read', () => {
     const [created] = await intentOf('CAD-488');
     const input = { organizationId, linkId: created?.link_id ?? '' };
     await query(
-      `update git_merge_intents set created_at = now() - interval '25 hours' where link_id = $1`,
+      `update git_merge_intents set window_started_at = now() - interval '25 hours' where link_id = $1`,
       [input.linkId],
     );
     await expect(intents.prepare(input)).resolves.toEqual({ status: 'expired' });
@@ -431,9 +444,44 @@ describe('Git link settlement, merge intents and the link read', () => {
         'select head_sha, repository_id::int as repository_id from git_check_observations',
       ),
     ).toEqual([{ head_sha: current, repository_id: mapping.binding.repositoryId }]);
-    const marked = await maintenance.findReconciliationPending(100);
+    const marked = await maintenance.reportReconciliationPending(100);
     expect(marked).toHaveLength(1);
     expect(marked[0]?.organizationId).toBe(organizationId);
+    // Each mark is reported once; a merged link is final and is not reported.
+    expect(await maintenance.reportReconciliationPending(100)).toEqual([]);
+    await settle(claim('CAD-494', 404, { trigger: 'pr_merged', closingTaskKeys: [] }));
+    await query(
+      `update git_links set reconciliation_pending_since = now() where task_key = 'CAD-494'`,
+    );
+    expect(await maintenance.reportReconciliationPending(100)).toEqual([]);
+  });
+
+  it('starts the receipt window when the dispatch claim was created', async () => {
+    await settle(
+      claim('CAD-495', 405, { trigger: 'pr_merged' }, true, Date.now() - 25 * 3_600_000),
+    );
+    const [created] = await intentOf('CAD-495');
+    await expect(
+      intents.prepare({ organizationId, linkId: created?.link_id ?? '' }),
+    ).resolves.toEqual({ status: 'expired' });
+  });
+
+  it('re-enqueues a pending intent whose submission job is gone', async () => {
+    await settle(claim('CAD-496', 406, { trigger: 'pr_merged' }));
+    const [created] = await intentOf('CAD-496');
+    const linkId = created?.link_id ?? '';
+    await intents.prepare({ organizationId, linkId });
+    // The queue exhausted attempt 1 without a settlement.
+    await query(
+      `update git_merge_intents set updated_at = now() - interval '3 hours' where link_id = $1`,
+      [linkId],
+    );
+    expect(await intentJobs(linkId)).toHaveLength(1);
+    await expect(maintenance.resumePendingMergeIntents(100)).resolves.toBeGreaterThanOrEqual(1);
+    expect(await intentJobs(linkId)).toHaveLength(2);
+    // A second pass right after finds the intent touched and enqueues nothing more.
+    await maintenance.resumePendingMergeIntents(100);
+    expect(await intentJobs(linkId)).toHaveLength(2);
   });
 
   it('refreshes the links of a head that a check suite names no request for', async () => {

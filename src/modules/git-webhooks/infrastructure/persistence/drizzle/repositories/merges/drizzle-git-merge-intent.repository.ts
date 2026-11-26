@@ -42,6 +42,8 @@ export class DrizzleGitMergeIntentRepository {
         status: pending ? 'pending' : 'handled',
         disposition: input.targetStatus === null ? null : (input.confirmed ?? null),
         reason: input.targetStatus === null ? 'no-status-intent' : null,
+        // The command key is the dispatch claim's UUIDv7: Task may hold its receipt since then.
+        windowStartedAt: sql`least(now(), ${new Date(windowStart(input.commandKey)).toISOString()}::timestamptz)`,
         updatedAt: sql`now()`,
       })
       .onConflictDoNothing()
@@ -50,4 +52,11 @@ export class DrizzleGitMergeIntentRepository {
     return row === undefined ? 'existing' : row.status;
   }
   // #endregion
+}
+
+/** Reads the creation time of a UUIDv7 command key, or now for another key. */
+function windowStart(commandKey: string): number {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(commandKey)
+    ? Number.parseInt(commandKey.slice(0, 8) + commandKey.slice(9, 13), 16)
+    : Date.now();
 }

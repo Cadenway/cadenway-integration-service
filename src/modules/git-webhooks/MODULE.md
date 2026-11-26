@@ -98,27 +98,40 @@ terminal task purges.
   observation or check can only use an existing link for the same receiver, verified provider
   binding and request number. These deliveries do not change Task status. Task owns current
   visibility, the mapping author's authority, status progression and activity.
-- The lifecycle and every other projected member keep their own provider-time watermark: an older
-  delivery is ignored for that member, an equal one is applied in arrival order. `merged` is final
-  and a verified merge supersedes `closed`. A delivery that reports the request's state realigns
-  the lifecycle when it is not older; an equal-time delivery whose lifecycle differs marks the link
-  `reconciliation pending`, and a strictly newer one carrying the state clears it. There is no
-  provider client before gap B5: the hourly maintenance reports each marked link.
-- Check observations are stored at admission per repository, head SHA and suite or pipeline, under
-  their own provider-time watermark, whether or not a link exists. The aggregate of the current head
-  leaves out `stale` GitHub suites, uses the GitLab pipeline with the highest ID and is absent with
-  no eligible observation. It is recomputed on creation, on a head change and on a check of the
-  current head. An observation whose head is no link's current head is pruned 7 days after its last
-  update by the hourly `integration.git-link-maintenance` job.
+- The lifecycle and every other projected member keep their own provider-time watermark with the
+  admission sequence of its delivery, drawn under the receiver lock: an older delivery is ignored
+  for that member, and an equal one is applied in admission order even when a later admission
+  settles first. `merged` is final and a verified merge supersedes `closed`. Any request action,
+  and a GitLab merge request pipeline, realigns the lifecycle from the reported state when it is not
+  older, without a head or Task status when the action is not a lifecycle or head change. An
+  equal-time delivery whose lifecycle differs marks the link `reconciliation pending`, and a
+  strictly newer one carrying the state clears it. There is no provider client before gap B5: the
+  hourly maintenance reports each mark once, `merged` links aside.
+- Check observations are stored at admission per repository, head SHA and suite or pipeline, in
+  one conditional upsert under their own provider-time watermark, whether or not a link exists. A
+  running GitLab pipeline is ordered by its latest job time, so a retry replaces its completion. The
+  aggregate is computed in SQL over every observation of the current head: `stale` GitHub suites
+  are left out, the GitLab pipeline with the highest ID counts, and it is absent with no eligible
+  observation. It is recomputed on creation, on a head change and on a check of the current head. A
+  GitHub suite that names no single request refreshes the existing links whose current head is its
+  head. A check receipt of the previous release, without observation, only advances the completion
+  time, which the read returns only with an aggregate. An observation whose head is no current
+  head of a link of its receiver and repository is pruned 7 days after its last update by the
+  hourly `integration.git-link-maintenance` job.
 - The first verified merge delivery of a link records its merge intent in the dispatch settlement
   transaction, under the link lock, whatever the lifecycle shows. Its command key is the dispatch
-  claim ID; the merge dispatch authorizes the link under that key with a `:link` suffix and no
-  status. A later merge delivery finds the intent and submits nothing. The
-  `integration.submit-git-merge-intent` job submits `done`, retries a failure or ambiguous answer
-  with backoff from one minute to one hour under the same key, and stops resending once the next
-  attempt would fall outside 24 hours of the intent: the intent then stays `pending` and the
-  maintenance reports it once. Task's `applied` or `no_op` marks it `handled`; `task.not-found`,
-  `task.trashed`, a reused key or an invalid request marks it `handled` with that reason.
+  claim ID; the merge dispatch of a link-recording receipt authorizes the link under that key with
+  a `:link` suffix and no status. A status-only receipt, and one admitted by the previous release,
+  still sends `done` with its dispatch under the claim ID; the previous-release receipt records its
+  intent `handled` with that disposition. A later merge delivery finds the intent and submits
+  nothing. The `integration.submit-git-merge-intent` job submits `done`, retries a failure or
+  ambiguous answer with backoff from one minute to one hour under the same key, and stops resending
+  once the next attempt would fall outside 24 hours of the earlier of the claim and the intent: the
+  intent then stays `pending` and the maintenance reports it once. The maintenance also re-enqueues
+  an in-window pending intent untouched for two hours, whose job the queue exhausted. Task's
+  `applied` or `no_op` marks it `handled`; `task.not-found`, `task.trashed`, a reused key or an
+  invalid request marks it `handled` with that reason. The intent and maintenance workers run
+  whatever the link flags, as the link dispatch worker does.
 - The worker uses the same Task command ID across transport attempts. It sends no action after the
   one-hour command window. Exhausted attempts go to a dead-letter queue with fixed diagnostics.
 

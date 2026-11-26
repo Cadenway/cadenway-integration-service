@@ -137,7 +137,10 @@ production stay in the secrets of cadenway-ops.
 (`pnpm migration:generate --name <what_it_does>` names the file). drizzle-kit enables row-level
 security on a table with a policy but never forces it: add
 `ALTER TABLE "<table>" FORCE ROW LEVEL SECURITY;` to the generated file for every new tenant table
-before it is merged, then never edit it again. `pnpm migration:run` builds and runs
+before it is merged, then never edit it again. An index on an existing table is built
+concurrently, and a check on it added `NOT VALID`, by a step `src/migrate.ts` runs after the
+Drizzle transaction commits, as `finishOutboxLeaseMigration` of the kit does for the outbox and
+`finishIntegrationMigrations` for the Git link projection of migration 0008. `pnpm migration:run` builds and runs
 `dist/migrate.js`, the command the GitOps agent runs in a one-off container before it starts a new
 version; it connects as the migrator role of `MIGRATION_DATABASE_URL` and applies what the journal
 does not list yet.

@@ -74,6 +74,10 @@ export const gitLinks = pgTable(
       withTimezone: true,
       precision: 3,
     }),
+    reconciliationReportedAt: timestamp('reconciliation_reported_at', {
+      withTimezone: true,
+      precision: 3,
+    }),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
   },
@@ -106,7 +110,9 @@ export const gitLinks = pgTable(
       .where(sql`${table.headSha} is not null`),
     index('git_links_reconciliation_index')
       .on(table.reconciliationPendingSince)
-      .where(sql`${table.reconciliationPendingSince} is not null`),
+      .where(
+        sql`${table.reconciliationPendingSince} is not null and ${table.reconciliationReportedAt} is null`,
+      ),
     index('git_links_request_lookup_index').on(
       table.organizationId,
       table.receiverId,

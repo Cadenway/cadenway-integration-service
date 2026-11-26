@@ -8,8 +8,9 @@ const reportLimit = 100;
 
 /**
  * Prunes check observations kept 7 days after their last update for a head that is no link's
- * current head ("Checks", Integration AsyncAPI), and collects the links an operator follows up:
- * those marked `reconciliation pending` and merge intents unconfirmed past Task's receipt window
+ * current head ("Checks", Integration AsyncAPI), resumes pending merge intents whose submission
+ * job is gone, and collects what an operator follows up: each link newly marked
+ * `reconciliation pending` and each merge intent left unconfirmed past Task's receipt window
  * ("Reconciliation" and "Merge intent"). Each step is bounded and safe to repeat.
  */
 export class RunGitLinkMaintenance {
@@ -29,9 +30,12 @@ export class RunGitLinkMaintenance {
       prunedObservations += pruned;
       if (pruned < pruneBatch) break;
     }
+    signal?.throwIfAborted();
+    const resumedMergeIntents = await this.work.resumePendingMergeIntents(reportLimit);
     return {
       prunedObservations,
-      reconciliationPending: await this.work.findReconciliationPending(reportLimit),
+      resumedMergeIntents,
+      reconciliationPending: await this.work.reportReconciliationPending(reportLimit),
       unconfirmedMergeIntents: await this.work.reportUnconfirmedMergeIntents(reportLimit),
     };
   }

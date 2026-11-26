@@ -58,6 +58,7 @@ export class GitLinkMaintenanceJobHandler implements OnApplicationBootstrap {
     this.logger.log(
       {
         prunedObservations: report.prunedObservations,
+        resumedMergeIntents: report.resumedMergeIntents,
         reconciliationPending: report.reconciliationPending.length,
         unconfirmedMergeIntents: report.unconfirmedMergeIntents.length,
       },

@@ -5,6 +5,7 @@ import { GitLinkMaintenanceJobHandler } from './git-link-maintenance.handler.js'
 
 const report = {
   prunedObservations: 3,
+  resumedMergeIntents: 0,
   reconciliationPending: [
     {
       organizationId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b2f',

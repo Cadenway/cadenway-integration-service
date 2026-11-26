@@ -38,6 +38,7 @@ import { DrizzleGitAdmissionUnitOfWork } from './infrastructure/persistence/driz
 import { DrizzleGitWebhookBindingUnitOfWork } from './infrastructure/persistence/drizzle/transactions/bindings/drizzle-git-webhook-binding.unit-of-work.js';
 import { DrizzleGitLinkMaintenanceUnitOfWork } from './infrastructure/persistence/drizzle/transactions/maintenance/drizzle-git-link-maintenance.unit-of-work.js';
 import { DrizzleGitMergeIntentUnitOfWork } from './infrastructure/persistence/drizzle/transactions/merges/drizzle-git-merge-intent.unit-of-work.js';
+import { finishGitLinkProjectionMigration } from './infrastructure/persistence/drizzle/transactions/links/finish-git-link-projection.unit-of-work.js';
 import { DrizzleGitPurgeUnitOfWork } from './infrastructure/persistence/drizzle/transactions/purge/drizzle-git-purge.unit-of-work.js';
 import { GitDispatchJobsProducer } from './infrastructure/jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 import { GitMergeIntentJobsProducer } from './infrastructure/jobs/pg-boss/merges/git-merge-intent.adapter.js';
@@ -80,7 +81,7 @@ async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
   );
 }
 
-/** Existing links keep their maintenance and merge intents while new link admission pauses. */
+/** Existing links keep receiving terminal task purges while new link admission pauses. */
 function linksMaintained(config: AppConfig): boolean {
   return config.GIT_LINK_EVENTS_ENABLED || config.GIT_LINK_PURGE_ENABLED;
 }
@@ -168,9 +169,13 @@ function linksMaintained(config: AppConfig): boolean {
     },
     {
       provide: RunGitLinkMaintenance,
-      inject: [SystemTransactionRunner],
-      useFactory: (runner: SystemTransactionRunner<DatabaseSchema>) =>
-        new RunGitLinkMaintenance(new DrizzleGitLinkMaintenanceUnitOfWork(runner)),
+      inject: [SystemTransactionRunner, TenantTransactionRunner, GitMergeIntentJobsProducer],
+      useFactory: (
+        runner: SystemTransactionRunner<DatabaseSchema>,
+        tenants: TenantTransactionRunner<DatabaseSchema>,
+        jobs: GitMergeIntentJobsProducer,
+      ) =>
+        new RunGitLinkMaintenance(new DrizzleGitLinkMaintenanceUnitOfWork(runner, tenants, jobs)),
     },
     {
       provide: ListTaskGitLinks,
@@ -190,31 +195,28 @@ function linksMaintained(config: AppConfig): boolean {
       useFactory: (workers: JobWorkerRegistry, dispatch: DispatchGitDelivery) =>
         new GitDispatchJobHandler(workers, dispatch, GIT_LINK_DISPATCH_QUEUE.name),
     },
+    // Like the link dispatch worker, these run whatever the flags: a draining link queue still
+    // records merge intents, which must be submitted, and links that must be maintained.
     {
       provide: GitMergeIntentJobHandler,
-      inject: [CONFIG, JobWorkerRegistry, SubmitGitMergeIntent],
-      useFactory: (config: AppConfig, workers: JobWorkerRegistry, submit: SubmitGitMergeIntent) =>
-        linksMaintained(config)
-          ? new GitMergeIntentJobHandler(workers, submit, GIT_MERGE_INTENT_QUEUE.name)
-          : null,
+      inject: [JobWorkerRegistry, SubmitGitMergeIntent],
+      useFactory: (workers: JobWorkerRegistry, submit: SubmitGitMergeIntent) =>
+        new GitMergeIntentJobHandler(workers, submit, GIT_MERGE_INTENT_QUEUE.name),
     },
     {
       provide: GitLinkMaintenanceJobHandler,
-      inject: [CONFIG, JobWorkerRegistry, JobScheduler, RunGitLinkMaintenance],
+      inject: [JobWorkerRegistry, JobScheduler, RunGitLinkMaintenance],
       useFactory: (
-        config: AppConfig,
         workers: JobWorkerRegistry,
         scheduler: JobScheduler,
         maintenance: RunGitLinkMaintenance,
       ) =>
-        linksMaintained(config)
-          ? new GitLinkMaintenanceJobHandler(
-              workers,
-              scheduler,
-              maintenance,
-              GIT_LINK_MAINTENANCE_QUEUE.name,
-            )
-          : null,
+        new GitLinkMaintenanceJobHandler(
+          workers,
+          scheduler,
+          maintenance,
+          GIT_LINK_MAINTENANCE_QUEUE.name,
+        ),
     },
     {
       provide: PurgeTaskGitLinks,
@@ -242,6 +244,13 @@ function linksMaintained(config: AppConfig): boolean {
 })
 export class GitWebhooksModule {
   // #region Methods
+  /** Completes this capability's migrations on a migrator session outside a transaction. */
+  public static finishMigrations(
+    client: Parameters<typeof finishGitLinkProjectionMigration>[0],
+  ): Promise<void> {
+    return finishGitLinkProjectionMigration(client);
+  }
+
   /** Runs a local operator command with only the application database connection. */
   public static runBindingCommand(args: readonly string[]): Promise<number> {
     return runGitWebhookBindingCommand(args, async (input) => {

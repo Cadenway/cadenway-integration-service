@@ -1,5 +1,5 @@
 {
-  "id": "5ef90bbb-7185-4d36-8b10-fc987d76e9f7",
+  "id": "8b5c3f71-5970-4367-aacb-d09334cf4a27",
   "prevId": "41e9d3d4-c4d2-4e43-9348-534b43fbbc45",
   "version": "7",
   "dialect": "postgresql",
@@ -1250,6 +1250,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "reconciliation_reported_at": {
+          "name": "reconciliation_reported_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp (3) with time zone",
@@ -1425,7 +1431,7 @@
             }
           ],
           "isUnique": false,
-          "where": "\"git_links\".\"reconciliation_pending_since\" is not null",
+          "where": "\"git_links\".\"reconciliation_pending_since\" is not null and \"git_links\".\"reconciliation_reported_at\" is null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1689,6 +1695,13 @@
           "notNull": true,
           "default": 0
         },
+        "window_started_at": {
+          "name": "window_started_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
         "reported_at": {
           "name": "reported_at",
           "type": "timestamp (3) with time zone",
@@ -1715,7 +1728,7 @@
           "name": "git_merge_intents_pending_index",
           "columns": [
             {
-              "expression": "created_at",
+              "expression": "window_started_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

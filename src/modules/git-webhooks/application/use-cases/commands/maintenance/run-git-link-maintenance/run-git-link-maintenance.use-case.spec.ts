@@ -14,8 +14,9 @@ function setup(): {
 } {
   const work: GitLinkMaintenanceUnitOfWork = {
     pruneCheckObservations: vi.fn().mockResolvedValue(0),
-    findReconciliationPending: vi.fn().mockResolvedValue([followUp]),
+    reportReconciliationPending: vi.fn().mockResolvedValue([followUp]),
     reportUnconfirmedMergeIntents: vi.fn().mockResolvedValue([]),
+    resumePendingMergeIntents: vi.fn().mockResolvedValue(2),
   };
   return { use: new RunGitLinkMaintenance(work), work };
 }
@@ -26,12 +27,14 @@ describe('RunGitLinkMaintenance', () => {
     vi.mocked(work.pruneCheckObservations).mockResolvedValueOnce(1_000).mockResolvedValueOnce(12);
     await expect(use.execute({})).resolves.toEqual({
       prunedObservations: 1_012,
+      resumedMergeIntents: 2,
       reconciliationPending: [followUp],
       unconfirmedMergeIntents: [],
     });
     expect(work.pruneCheckObservations).toHaveBeenCalledTimes(2);
-    expect(work.findReconciliationPending).toHaveBeenCalledWith(100);
+    expect(work.reportReconciliationPending).toHaveBeenCalledWith(100);
     expect(work.reportUnconfirmedMergeIntents).toHaveBeenCalledWith(100);
+    expect(work.resumePendingMergeIntents).toHaveBeenCalledWith(100);
   });
 
   it('bounds one pass to twenty batches', async () => {

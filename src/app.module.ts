@@ -125,6 +125,13 @@ import { PlatformModule } from './modules/platform/platform.module.js';
 })
 export class AppModule {}
 
+/** Completes the Git capability's migrations on a migrator session outside a transaction. */
+export function finishIntegrationMigrations(
+  client: Parameters<typeof GitWebhooksModule.finishMigrations>[0],
+): Promise<void> {
+  return GitWebhooksModule.finishMigrations(client);
+}
+
 /** Invokes the Git capability's operator command without starting the HTTP or broker listeners. */
 export function runIntegrationGitBindingCommand(args: readonly string[]): Promise<number> {
   return GitWebhooksModule.runBindingCommand(args);

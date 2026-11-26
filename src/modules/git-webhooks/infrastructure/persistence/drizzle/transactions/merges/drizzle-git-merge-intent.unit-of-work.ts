@@ -40,7 +40,7 @@ export class DrizzleGitMergeIntentUnitOfWork implements GitMergeIntentUnitOfWork
         return { status: 'settled' } as const;
       }
       const now = await clock(scope);
-      if (now >= intent.createdAt.getTime() + gitMergeIntentWindowMs) {
+      if (now >= intent.windowStartedAt.getTime() + gitMergeIntentWindowMs) {
         return { status: 'expired' } as const;
       }
       const attempt = intent.attempts + 1;
@@ -87,7 +87,7 @@ export class DrizzleGitMergeIntentUnitOfWork implements GitMergeIntentUnitOfWork
         return 'handled';
       }
       const decision = decideGitMergeIntentRetry(
-        intent.createdAt.getTime(),
+        intent.windowStartedAt.getTime(),
         input.attempt,
         await clock(scope),
       );
