@@ -27,7 +27,14 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { GIT_MERGE_INTENT_QUEUE } from '../../../../../../../config/job-queues.js';
+import {
+  GIT_HEAD_CHECKS_QUEUE,
+  GIT_LINK_DISPATCH_V2_QUEUE,
+  GIT_MERGE_INTENT_QUEUE,
+} from '../../../../../../../config/job-queues.js';
+import { GitHeadChecksJobsProducer } from '../../../../jobs/pg-boss/checks/git-head-checks.adapter.js';
+import { GitDispatchJobsProducer } from '../../../../jobs/pg-boss/dispatch/git-dispatch.adapter.js';
+import { DrizzleGitHeadChecksUnitOfWork } from '../checks/drizzle-git-head-checks.unit-of-work.js';
 import type { GitDispatchClaim } from '../../../../../application/models/dispatch/git-dispatch-claim.model.js';
 import { GitMergeIntentJobsProducer } from '../../../../jobs/pg-boss/merges/git-merge-intent.adapter.js';
 import { GitLinkChangedOutbox } from '../../../../messaging/outbox/links/git-link-changed-outbox.adapter.js';
@@ -128,6 +135,7 @@ describe('Git link settlement, merge intents and the link read', () => {
   let intents: DrizzleGitMergeIntentUnitOfWork;
   let maintenance: DrizzleGitLinkMaintenanceUnitOfWork;
   let reader: DrizzleTaskGitLinkReader;
+  let headChecks: DrizzleGitHeadChecksUnitOfWork;
 
   const settle = (current: GitDispatchClaim, using = settlement) =>
     inOrganization(() =>
@@ -149,7 +157,7 @@ describe('Git link settlement, merge intents and the link read', () => {
       await provisionJobs({
         connection: { connectionString: migrationUrl },
         appRole: 'integration_app',
-        queues: [GIT_MERGE_INTENT_QUEUE],
+        queues: [GIT_MERGE_INTENT_QUEUE, GIT_HEAD_CHECKS_QUEUE, GIT_LINK_DISPATCH_V2_QUEUE],
       });
     } finally {
       await migrator.end();
@@ -161,7 +169,7 @@ describe('Git link settlement, merge intents and the link read', () => {
       imports: [
         JobsRuntimeModule.forRoot({
           connection: { connectionString },
-          queues: [GIT_MERGE_INTENT_QUEUE],
+          queues: [GIT_MERGE_INTENT_QUEUE, GIT_HEAD_CHECKS_QUEUE, GIT_LINK_DISPATCH_V2_QUEUE],
           capabilities: ['producer'],
           poolSize: 2,
         }),
@@ -197,6 +205,12 @@ describe('Git link settlement, merge intents and the link read', () => {
       jobs,
     );
     reader = new DrizzleTaskGitLinkReader(runner);
+    headChecks = new DrizzleGitHeadChecksUnitOfWork(
+      runner,
+      links,
+      new GitDispatchJobsProducer(runtime.get(JobProducer)),
+      new GitHeadChecksJobsProducer(runtime.get(JobProducer)),
+    );
     for (const tenant of [organizationId]) {
       await inOrganization(
         () =>
@@ -580,6 +594,70 @@ describe('Git link settlement, merge intents and the link read', () => {
         'CAD-493',
       ]),
     ).toEqual([{ title: 'Admitted second', version: 2 }]);
+  });
+
+  it('refreshes every link on a head in resumable pages, apart from the named request', async () => {
+    const head = '9'.repeat(40);
+    // 25 links of 25 tasks on one head, and the named request's link.
+    for (let index = 0; index < 26; index += 1) {
+      await settle(
+        claim(`CAD-${String(600 + index)}`, 500 + index, {
+          trigger: 'pr_open',
+          closingTaskKeys: [],
+          head: { sha: head, observedAtMs: T },
+        }),
+      );
+    }
+    const page = {
+      organizationId,
+      receiverId,
+      binding: mapping.binding,
+      headSha: head,
+      attemptId: 77,
+      observedAtMs: T,
+      source: 'f'.repeat(64),
+      page: 0,
+      excludeRequestNumber: 525,
+      after: null,
+    };
+    await expect(headChecks.refresh(page, 20)).resolves.toEqual({
+      status: 'refreshed',
+      links: 20,
+      more: true,
+    });
+    const next = await query<{ readonly data: { readonly payload: typeof page } }>(
+      'select data from pgboss.job where name = $1',
+      [GIT_HEAD_CHECKS_QUEUE.name],
+    );
+    expect(next).toHaveLength(1);
+    const second = { ...next[0]?.data.payload, organizationId } as typeof page;
+    expect(second).toMatchObject({ page: 1, after: { taskKey: 'CAD-619' } });
+    await expect(headChecks.refresh(second, 20)).resolves.toEqual({
+      status: 'refreshed',
+      links: 5,
+      more: false,
+    });
+    // A page that runs again records nothing more.
+    await headChecks.refresh(page, 20);
+    const receipts = await query<{ readonly targets: number }>(
+      `select jsonb_array_length(work -> 'fact' -> 'targets')::int as targets
+         from git_webhook_deliveries where work -> 'fact' ->> 'trigger' = 'head_checks'
+          and work -> 'fact' ->> 'headSha' = $1 order by created_at`,
+      [head],
+    );
+    expect(receipts).toEqual([{ targets: 20 }, { targets: 5 }]);
+    const dispatched = await query<{ readonly count: number }>(
+      `select count(*)::int as count from pgboss.job
+        where name = $1 and data -> 'payload' ->> 'taskKey' like 'CAD-6%'`,
+      [GIT_LINK_DISPATCH_V2_QUEUE.name],
+    );
+    expect(dispatched).toEqual([{ count: 25 }]);
+    const named = await query(
+      `select 1 from git_webhook_deliveries
+        where work -> 'fact' ->> 'trigger' = 'head_checks'
+          and work -> 'fact' -> 'targets' @> '[{"taskKey": "CAD-625"}]'`,
+    );
+    expect(named).toEqual([]);
   });
 
   it('pages a task links newest first within the organization and hides a purged task', async () => {

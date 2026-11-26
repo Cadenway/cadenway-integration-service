@@ -23,13 +23,16 @@ export interface GitDeliveryTransaction {
   ) => Promise<readonly string[] | null>;
 
   /**
-   * Selects the existing pull request links of the mapped repository whose current head is
-   * `headSha`, or null on overflow.
+   * Queues the paged refresh of every existing link whose current head is the observation's
+   * head in the mapped repository, leaving out the links of `excludeRequestNumber`, which the
+   * delivery's own work refreshes. Does nothing while link recording is disabled.
    */
-  readonly findHeadTargets: (
-    binding: GitRepositoryIdentity,
-    headSha: string,
-  ) => Promise<readonly { readonly taskKey: string; readonly requestNumber: number }[] | null>;
+  readonly scheduleHeadRefresh: (input: {
+    readonly digest: string;
+    readonly binding: GitRepositoryIdentity;
+    readonly observation: GitCheckObservation;
+    readonly excludeRequestNumber: number | null;
+  }) => Promise<void>;
 
   /** Finds earlier admitted work that can establish an authorized request link. */
   readonly findPendingRequestWork: (

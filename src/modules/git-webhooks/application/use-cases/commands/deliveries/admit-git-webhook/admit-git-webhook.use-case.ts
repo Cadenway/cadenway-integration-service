@@ -65,13 +65,15 @@ export class AdmitGitWebhook {
       // Observations are kept per repository and head, also before any link exists.
       if (checks !== null) {
         await transaction.recordCheckObservation(mapping.binding, checks.observation);
+        // Every link on the observed head is refreshed; the named request through this receipt.
+        await transaction.scheduleHeadRefresh({
+          digest,
+          binding: mapping.binding,
+          observation: checks.observation,
+          excludeRequestNumber: checks.request?.number ?? null,
+        });
       }
-      const work =
-        fact.kind === 'actionable'
-          ? await selectWork(transaction, mapping, fact)
-          : checks === null
-            ? null
-            : await selectHeadWork(transaction, mapping, checks);
+      const work = fact.kind === 'actionable' ? await selectWork(transaction, mapping, fact) : null;
       return transaction.admit({
         deliveryId,
         digest,
@@ -121,38 +123,6 @@ function readFact(
   };
 }
 
-/**
- * Refreshes the checks of the existing links whose current head is the suite's head when the
- * provider names no single request for it ("Checks", Integration AsyncAPI). Each link still
- * needs Task's current placement and its head is checked again when the job settles.
- */
-async function selectHeadWork(
-  transaction: GitDeliveryTransaction,
-  mapping: GitDeliveryMapping,
-  checks: VerifiedGitChecks,
-): Promise<Parameters<GitDeliveryTransaction['admit']>[0]['work']> {
-  const { observation } = checks;
-  const targets = await transaction.findHeadTargets(mapping.binding, observation.headSha);
-  if (targets === null || targets.length === 0) return null;
-  return {
-    mapping,
-    fact: {
-      kind: 'actionable',
-      trigger: 'head_checks',
-      headSha: observation.headSha,
-      targets,
-      checks: {
-        headSha: observation.headSha,
-        attemptId: observation.attemptId,
-        completedAtMs: observation.observedAtMs,
-        observed: true,
-      },
-      taskKeys: [...new Set(targets.map(({ taskKey }) => taskKey))],
-      closingTaskKeys: [],
-    },
-  };
-}
-
 async function selectWork(
   transaction: GitDeliveryTransaction,
   mapping: GitDeliveryMapping,
@@ -164,7 +134,11 @@ async function selectWork(
   const taskKeys = await transaction.findRequestTaskKeys(
     mapping.binding,
     fact.requestNumber,
-    fact.trigger === 'pr_checks' ? fact.checks.headSha : undefined,
+    // A merge request pipeline reports its request's state, which reaches every link of the
+    // request; the aggregate itself only changes a link whose current head is the pipeline's.
+    fact.trigger === 'pr_checks' && fact.requestState === undefined
+      ? fact.checks.headSha
+      : undefined,
   );
   if (taskKeys === null && fact.trigger !== 'pr_merged') return null;
   const pending = await transaction.findPendingRequestWork(

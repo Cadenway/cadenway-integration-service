@@ -112,9 +112,12 @@ terminal task purges.
   running GitLab pipeline is ordered by its latest job time, so a retry replaces its completion. The
   aggregate is computed in SQL over every observation of the current head: `stale` GitHub suites
   are left out, the GitLab pipeline with the highest ID counts, and it is absent with no eligible
-  observation. It is recomputed on creation, on a head change and on a check of the current head. A
-  GitHub suite that names no single request refreshes the existing links whose current head is its
-  head. A check receipt of the previous release, without observation, only advances the completion
+  observation. It is recomputed on creation, on a head change and on a check of the current head.
+  Each observation refreshes every existing link whose current head is its head, in resumable
+  pages of 20 links queued on `integration.refresh-git-head-checks`, each recorded as a receipt of
+  its own. The links of the request a delivery names go through the delivery's receipt instead; a
+  GitLab merge request pipeline reaches all of them whatever their head, to realign the lifecycle.
+  A check receipt of the previous release, without observation, only advances the completion
   time, which the read returns only with an aggregate. An observation whose head is no current
   head of a link of its receiver and repository is pruned 7 days after its last update by the
   hourly `integration.git-link-maintenance` job.

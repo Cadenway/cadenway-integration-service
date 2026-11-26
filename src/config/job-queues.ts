@@ -60,3 +60,13 @@ export const GIT_LINK_MAINTENANCE_QUEUE = {
   expireInSeconds: 120,
   retentionSeconds: 60 * 60,
 } as const satisfies JobQueueDeclaration;
+
+/** Pages through the links whose current head is an observed check head, to refresh them. */
+export const GIT_HEAD_CHECKS_QUEUE = {
+  name: 'integration.refresh-git-head-checks',
+  retryLimit: 5,
+  retryDelaySeconds: 15,
+  retryDelayMaxSeconds: 300,
+  expireInSeconds: 30,
+  retentionSeconds: 48 * 60 * 60,
+} as const satisfies JobQueueDeclaration;

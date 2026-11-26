@@ -14,6 +14,7 @@ import { z } from 'zod';
 import type { AppConfig } from '../../config/app-config.js';
 import {
   GIT_DISPATCH_QUEUE,
+  GIT_HEAD_CHECKS_QUEUE,
   GIT_LINK_DISPATCH_QUEUE,
   GIT_LINK_DISPATCH_V2_QUEUE,
   GIT_LINK_MAINTENANCE_QUEUE,
@@ -22,6 +23,7 @@ import {
 } from '../../config/job-queues.js';
 import type { GitTaskAction } from './application/ports/outbound/actions/dispatch/git-task-action.port.js';
 import { decideGitCheckPrerequisites } from './application/models/dispatch/git-check-prerequisites.model.js';
+import { RefreshGitHeadChecks } from './application/use-cases/commands/checks/refresh-git-head-checks/refresh-git-head-checks.use-case.js';
 import { AdmitGitWebhook } from './application/use-cases/commands/deliveries/admit-git-webhook/admit-git-webhook.use-case.js';
 import { ManageGitWebhookBinding } from './application/use-cases/commands/bindings/manage-git-webhook-binding/manage-git-webhook-binding.use-case.js';
 import { DispatchGitDelivery } from './application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
@@ -33,6 +35,7 @@ import { GitLinkChangedOutbox } from './infrastructure/messaging/outbox/links/gi
 import { DrizzleGitLinkRepository } from './infrastructure/persistence/drizzle/repositories/links/drizzle-git-link.repository.js';
 import { DrizzleTaskGitLinkReader } from './infrastructure/persistence/drizzle/repositories/links/drizzle-task-git-link-reader.repository.js';
 import { DrizzleGitMergeIntentRepository } from './infrastructure/persistence/drizzle/repositories/merges/drizzle-git-merge-intent.repository.js';
+import { DrizzleGitHeadChecksUnitOfWork } from './infrastructure/persistence/drizzle/transactions/checks/drizzle-git-head-checks.unit-of-work.js';
 import { DrizzleGitDispatchUnitOfWork } from './infrastructure/persistence/drizzle/transactions/dispatch/drizzle-git-dispatch.unit-of-work.js';
 import { DrizzleGitLinkSettlement } from './infrastructure/persistence/drizzle/transactions/dispatch/drizzle-git-link-settlement.unit-of-work.js';
 import { DrizzleGitAdmissionUnitOfWork } from './infrastructure/persistence/drizzle/transactions/deliveries/drizzle-git-admission.unit-of-work.js';
@@ -41,6 +44,7 @@ import { DrizzleGitLinkMaintenanceUnitOfWork } from './infrastructure/persistenc
 import { DrizzleGitMergeIntentUnitOfWork } from './infrastructure/persistence/drizzle/transactions/merges/drizzle-git-merge-intent.unit-of-work.js';
 import { finishGitLinkProjectionMigration } from './infrastructure/persistence/drizzle/transactions/links/finish-git-link-projection.unit-of-work.js';
 import { DrizzleGitPurgeUnitOfWork } from './infrastructure/persistence/drizzle/transactions/purge/drizzle-git-purge.unit-of-work.js';
+import { GitHeadChecksJobsProducer } from './infrastructure/jobs/pg-boss/checks/git-head-checks.adapter.js';
 import { GitDispatchJobsProducer } from './infrastructure/jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 import { GitMergeIntentJobsProducer } from './infrastructure/jobs/pg-boss/merges/git-merge-intent.adapter.js';
 import {
@@ -51,6 +55,7 @@ import { GitTaskHttpAdapter } from './infrastructure/adapters/task-service/git-t
 import { GitLinksController } from './presentation/http/controllers/links/git-links.controller.js';
 import { GitWebhooksController } from './presentation/http/controllers/deliveries/git-webhooks.controller.js';
 import { runGitWebhookBindingCommand } from './presentation/cli/commands/bindings/manage-git-webhook-binding.command.js';
+import { GitHeadChecksJobHandler } from './presentation/jobs/handlers/checks/git-head-checks.handler.js';
 import { GitDispatchJobHandler } from './presentation/jobs/handlers/dispatch/git-dispatch.handler.js';
 import { GitLinkMaintenanceJobHandler } from './presentation/jobs/handlers/maintenance/git-link-maintenance.handler.js';
 import { GitMergeIntentJobHandler } from './presentation/jobs/handlers/merges/git-merge-intent.handler.js';
@@ -93,6 +98,7 @@ function linksMaintained(config: AppConfig): boolean {
   controllers: [GitWebhooksController, GitLinksController],
   providers: [
     GitDispatchJobsProducer,
+    GitHeadChecksJobsProducer,
     GitMergeIntentJobsProducer,
     {
       provide: taskAction,
@@ -101,11 +107,12 @@ function linksMaintained(config: AppConfig): boolean {
     },
     {
       provide: AdmitGitWebhook,
-      inject: [TenantTransactionRunner, CONFIG, GitDispatchJobsProducer],
+      inject: [TenantTransactionRunner, CONFIG, GitDispatchJobsProducer, GitHeadChecksJobsProducer],
       useFactory: (
         runner: TenantTransactionRunner<DatabaseSchema>,
         config: AppConfig,
         jobs: GitDispatchJobsProducer,
+        headChecks: GitHeadChecksJobsProducer,
       ) =>
         new AdmitGitWebhook(
           new DrizzleGitAdmissionUnitOfWork(
@@ -113,6 +120,7 @@ function linksMaintained(config: AppConfig): boolean {
             config.GIT_WEBHOOK_RECEIVERS,
             jobs,
             config.GIT_LINK_EVENTS_ENABLED ? new DrizzleGitLinkRepository() : undefined,
+            headChecks,
           ),
           {
             verify: (delivery, secret) =>
@@ -168,6 +176,29 @@ function linksMaintained(config: AppConfig): boolean {
         jobs: GitMergeIntentJobsProducer,
         task: GitTaskAction,
       ) => new SubmitGitMergeIntent(new DrizzleGitMergeIntentUnitOfWork(runner, jobs), task),
+    },
+    {
+      provide: RefreshGitHeadChecks,
+      inject: [TenantTransactionRunner, GitDispatchJobsProducer, GitHeadChecksJobsProducer],
+      useFactory: (
+        runner: TenantTransactionRunner<DatabaseSchema>,
+        dispatch: GitDispatchJobsProducer,
+        pages: GitHeadChecksJobsProducer,
+      ) =>
+        new RefreshGitHeadChecks(
+          new DrizzleGitHeadChecksUnitOfWork(
+            runner,
+            new DrizzleGitLinkRepository(),
+            dispatch,
+            pages,
+          ),
+        ),
+    },
+    {
+      provide: GitHeadChecksJobHandler,
+      inject: [JobWorkerRegistry, RefreshGitHeadChecks],
+      useFactory: (workers: JobWorkerRegistry, refresh: RefreshGitHeadChecks) =>
+        new GitHeadChecksJobHandler(workers, refresh, GIT_HEAD_CHECKS_QUEUE.name),
     },
     {
       provide: RunGitLinkMaintenance,

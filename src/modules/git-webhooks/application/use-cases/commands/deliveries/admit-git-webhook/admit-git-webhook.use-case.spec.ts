@@ -54,7 +54,7 @@ function setup(): {
     findRequestTaskKeys: vi.fn().mockResolvedValue([]),
     findPendingRequestWork: vi.fn().mockResolvedValue([]),
     recordCheckObservation: vi.fn().mockResolvedValue(undefined),
-    findHeadTargets: vi.fn().mockResolvedValue([]),
+    scheduleHeadRefresh: vi.fn().mockResolvedValue(undefined),
     admit: vi.fn().mockResolvedValue('accepted'),
   };
   const work: GitDeliveryUnitOfWork = {
@@ -367,48 +367,68 @@ describe('AdmitGitWebhook', () => {
       expect.objectContaining({ attemptId: 278, headSha, status: 'queued', completedAtMs: null }),
     );
     expect(transaction.findRequestTaskKeys).not.toHaveBeenCalled();
-    expect(transaction.findHeadTargets).toHaveBeenCalledWith(mapping.binding, headSha);
+    // Every link on the head is refreshed in pages, apart from the delivery's own receipt.
+    expect(transaction.scheduleHeadRefresh).toHaveBeenCalledWith({
+      digest: 'a'.repeat(64),
+      binding: mapping.binding,
+      observation: expect.objectContaining({ attemptId: 278, headSha }) as unknown,
+      excludeRequestNumber: null,
+    });
     expect(transaction.admit).toHaveBeenCalledWith({
       deliveryId: input.deliveryId,
       digest: 'a'.repeat(64),
       work: null,
     });
+  });
 
-    // Existing links whose current head is the suite's head are refreshed.
-    const targets = [
-      { taskKey: 'CAD-482', requestNumber: 214 },
-      { taskKey: 'CAD-482', requestNumber: 215 },
-      { taskKey: 'CAD-483', requestNumber: 215 },
-    ];
-    vi.mocked(transaction.findHeadTargets).mockResolvedValue(targets);
+  it('reaches every link of the merge request a pipeline names, whatever its head', async () => {
+    const { command, transaction, work } = setup();
+    const gitlab = { ...mapping, binding: { provider: 'gitlab' as const, repositoryId: 701 } };
+    vi.mocked(transaction.findMapping).mockResolvedValue(gitlab);
+    vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-482']);
+    const sha = 'c'.repeat(40);
+    const body = {
+      object_kind: 'pipeline',
+      project: { id: 701 },
+      object_attributes: {
+        id: 31,
+        tag: false,
+        sha,
+        source: 'merge_request_event',
+        status: 'success',
+        finished_at: '2026-11-08T20:18:44Z',
+      },
+      merge_request: { iid: 44, source_project_id: 701, target_project_id: 701, state: 'merged' },
+      commit: { id: sha },
+    };
+    vi.mocked(work.findReceiver).mockResolvedValue({ ...receiver, provider: 'gitlab' });
     await expect(
       command.execute({
-        ...input,
-        event: 'check_suite',
+        provider: 'gitlab',
+        bindingId: receiver.bindingId,
+        deliveryId: input.deliveryId,
+        event: 'Pipeline Hook',
+        signature: 'v1,signature',
+        timestamp: '1794169124',
+        currentUnixSeconds: 1794169124,
         rawBody: new TextEncoder().encode(JSON.stringify(body)),
       }),
     ).resolves.toEqual({ status: 'accepted' });
-    expect(transaction.admit).toHaveBeenLastCalledWith({
-      deliveryId: input.deliveryId,
-      digest: 'a'.repeat(64),
-      work: {
-        mapping,
-        fact: {
-          kind: 'actionable',
-          trigger: 'head_checks',
-          headSha,
-          targets,
-          checks: {
-            headSha,
-            attemptId: 278,
-            completedAtMs: Date.parse('2026-11-08T20:18:44Z'),
-            observed: true,
-          },
-          taskKeys: ['CAD-482', 'CAD-483'],
-          closingTaskKeys: [],
-        },
-      },
-    });
+    expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(gitlab.binding, 44, undefined);
+    expect(transaction.scheduleHeadRefresh).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeRequestNumber: 44 }),
+    );
+    expect(transaction.admit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        work: expect.objectContaining({
+          fact: expect.objectContaining({
+            trigger: 'pr_checks',
+            taskKeys: ['CAD-482'],
+            requestState: { state: 'merged', observedAtMs: Date.parse('2026-11-08T20:18:44Z') },
+          }) as unknown,
+        }) as unknown,
+      }),
+    );
   });
 
   it.each(['reopened', 'edited', 'ready_for_review', 'review_requested'])(

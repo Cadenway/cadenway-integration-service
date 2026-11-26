@@ -44,67 +44,86 @@ export class DrizzleGitLinkRepository {
 
   // #region Methods
   /**
-   * Finds the pull request links of the receiver's repository whose current head is `headSha`,
-   * whatever their request, or null when they exceed the bound of 20 links.
+   * Pages through the pull request links of the receiver's repository whose current head is
+   * `headSha`, whatever their request, in `(taskKey, id)` order after `after`, leaving out the
+   * links of `excludeRequestNumber`. Returns at most `limit` links and whether more follow.
    */
-  public async findHeadTargets(
+  public async findHeadTargetsPage(
     scope: TransactionScope<DatabaseSchema>,
     input: {
       readonly organizationId: string;
       readonly receiverId: string;
       readonly binding: GitReceiverBinding;
       readonly headSha: string;
+      readonly excludeRequestNumber: number | null;
+      readonly after: { readonly taskKey: string; readonly linkId: string } | null;
+      readonly limit: number;
     },
-  ): Promise<readonly { readonly taskKey: string; readonly requestNumber: number }[] | null> {
+  ): Promise<{
+    readonly targets: readonly {
+      readonly taskKey: string;
+      readonly requestNumber: number;
+      readonly linkId: string;
+    }[];
+    readonly more: boolean;
+  }> {
     if (scope.kind !== 'tenant' || scope.organizationId !== input.organizationId) {
       throw new Error('Git link lookup does not belong to the tenant transaction.');
     }
     const { binding } = input;
+    const predicates = [
+      eq(gitLinks.organizationId, input.organizationId),
+      eq(gitLinks.receiverId, input.receiverId),
+      eq(gitLinks.provider, binding.provider),
+      eq(gitLinks.headSha, input.headSha),
+      sql`${gitLinks.identity} ->> 'kind' = 'pull-request'`,
+      sql`${gitLinks.identity} -> 'binding' ->> 'repositoryId' = ${String(binding.repositoryId)}`,
+      sql`not exists (
+        select 1 from ${gitPurgedTasks}
+        where ${gitPurgedTasks.organizationId} = ${input.organizationId}
+          and ${gitPurgedTasks.taskKey} = ${gitLinks.taskKey}
+      )`,
+    ];
+    if (binding.provider === 'github') {
+      predicates.push(
+        sql`${gitLinks.identity} -> 'binding' ->> 'installationId' = ${String(binding.installationId)}`,
+      );
+    }
+    if (input.excludeRequestNumber !== null) {
+      predicates.push(
+        sql`${gitLinks.identity} ->> 'requestNumber' <> ${String(input.excludeRequestNumber)}`,
+      );
+    }
+    if (input.after !== null) {
+      predicates.push(
+        sql`(${gitLinks.taskKey}, ${gitLinks.id}) > (${input.after.taskKey}, ${input.after.linkId}::uuid)`,
+      );
+    }
     const rows = await scope.db
-      .select({ taskKey: gitLinks.taskKey, taskId: gitLinks.taskId, identity: gitLinks.identity })
+      .select({
+        id: gitLinks.id,
+        taskKey: gitLinks.taskKey,
+        taskId: gitLinks.taskId,
+        identity: gitLinks.identity,
+      })
       .from(gitLinks)
-      .where(
-        and(
-          eq(gitLinks.organizationId, input.organizationId),
-          eq(gitLinks.receiverId, input.receiverId),
-          eq(gitLinks.provider, binding.provider),
-          eq(gitLinks.headSha, input.headSha),
-          sql`${gitLinks.identity} ->> 'kind' = 'pull-request'`,
-          sql`${gitLinks.identity} -> 'binding' ->> 'repositoryId' = ${String(binding.repositoryId)}`,
-          sql`not exists (
-            select 1 from ${gitPurgedTasks}
-            where ${gitPurgedTasks.organizationId} = ${input.organizationId}
-              and ${gitPurgedTasks.taskKey} = ${gitLinks.taskKey}
-          )`,
-        ),
-      )
+      .where(and(...predicates))
       .orderBy(gitLinks.taskKey, gitLinks.id)
-      .limit(21);
-    // A truncated set must never be treated as the complete audience.
-    if (rows.length > 20) return null;
-    const targets: { readonly taskKey: string; readonly requestNumber: number }[] = [];
-    for (const row of rows) {
+      .limit(input.limit + 1);
+    const targets = rows.slice(0, input.limit).map((row) => {
       const { identity } = row;
       if (
         identity.organizationId !== input.organizationId ||
         identity.receiverId !== input.receiverId ||
         identity.taskId !== row.taskId ||
-        identity.kind !== 'pull-request'
+        identity.kind !== 'pull-request' ||
+        !sameBinding(identity.binding, binding)
       ) {
         throw new Error('Stored Git link does not match its verified identity.');
       }
-      // The installation is part of a GitHub binding: another installation's link is not this one.
-      if (!sameBinding(identity.binding, binding)) continue;
-      if (
-        !targets.some(
-          (target) =>
-            target.taskKey === row.taskKey && target.requestNumber === identity.requestNumber,
-        )
-      ) {
-        targets.push({ taskKey: row.taskKey, requestNumber: identity.requestNumber });
-      }
-    }
-    return targets;
+      return { taskKey: row.taskKey, requestNumber: identity.requestNumber, linkId: row.id };
+    });
+    return { targets, more: rows.length > input.limit };
   }
 
   /** Finds the tasks linked to the exact verified request, or null if the set exceeds its bound. */

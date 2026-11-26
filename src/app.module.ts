@@ -23,6 +23,7 @@ import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 import {
   GIT_DISPATCH_QUEUE,
+  GIT_HEAD_CHECKS_QUEUE,
   GIT_LINK_DISPATCH_QUEUE,
   GIT_LINK_DISPATCH_V2_QUEUE,
   GIT_LINK_MAINTENANCE_QUEUE,
@@ -107,6 +108,7 @@ import { PlatformModule } from './modules/platform/platform.module.js';
           GIT_LINK_DISPATCH_V2_QUEUE,
           GIT_PURGE_QUEUE,
           GIT_MERGE_INTENT_QUEUE,
+          GIT_HEAD_CHECKS_QUEUE,
           GIT_LINK_MAINTENANCE_QUEUE,
         ],
         capabilities: ['producer', 'worker', 'scheduler'],
