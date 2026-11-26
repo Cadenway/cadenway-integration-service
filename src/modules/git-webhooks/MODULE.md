@@ -156,9 +156,12 @@ terminal task purges.
   stable occurrence key within the check's original dispatch window. An expired predecessor with an
   unsettled verified head observation closes the dependent check without a Task command or check event.
   Checks that resume still compare the exact current recorded head under the link lock.
-- Link-producing receipts go to `integration.dispatch-git-link` and preserve that choice until
-  settlement. Compatibility workers continue to handle the original status queue. A compatible
-  worker can drain the link queue after new link admissions are disabled.
+- Link-producing receipts go to `integration.dispatch-git-link.v2`, which only workers that know
+  merge intents and the newer request and check facts consume, and preserve that choice until
+  settlement. Current workers also drain `integration.dispatch-git-link`, where receipts of the
+  previous release wait, and compatibility workers continue to handle the original status queue.
+  Before rolling back to the previous release, drain the v2 queue: only the current image
+  consumes it.
 - Dispatch reserves its Task command ID in a short tenant transaction, performs HTTP outside the
   transaction and revalidates the receiver and mapping when recording Task's authorized placement.
 - A replayed Task receipt obtains current signed placement through a fresh no-op command. The

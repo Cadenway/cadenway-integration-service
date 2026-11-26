@@ -119,7 +119,7 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
       scope,
       input.deliveryId,
       input.taskKey,
-      work.recordLink === true,
+      work,
       decision.startAfter,
     );
     return 'deferred';

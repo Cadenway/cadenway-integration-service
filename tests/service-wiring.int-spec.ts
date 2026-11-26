@@ -28,8 +28,13 @@ import { AppModule, createIntegrationApplication } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
 import { ListTaskGitLinksInternalResponse } from '@cadenway/contracts/validators/internal/integration-service';
 
-import { GIT_LINK_DISPATCH_QUEUE, GIT_LINK_MAINTENANCE_QUEUE } from '../src/config/job-queues.js';
+import {
+  GIT_LINK_DISPATCH_QUEUE,
+  GIT_LINK_DISPATCH_V2_QUEUE,
+  GIT_LINK_MAINTENANCE_QUEUE,
+} from '../src/config/job-queues.js';
 import { DispatchGitDelivery } from '../src/modules/git-webhooks/application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
+import { GitDispatchJobsProducer } from '../src/modules/git-webhooks/infrastructure/jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
 // does not export its container fixtures yet and a service never depends on `testcontainers` itself,
@@ -522,6 +527,83 @@ describe('integration-service wiring', () => {
     expect(journal.rows).toEqual([{ applied: 9 }]);
   });
 
+  it('drains link receipts of the previous release from the previous link queue', async () => {
+    const tenant = service().get(TenantTransactionRunner);
+    const mapping = {
+      binding: { provider: 'github', repositoryId: 81, installationId: 41 },
+      integrationId: gitIntegrationId,
+      spaceId: gitSpaceId,
+      mappingAuthorUserId: camilleMartinId,
+    };
+    const receipt = (fact: Record<string, unknown>, digest: string) =>
+      runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+        tenant.run(async (scope) => {
+          // The previous release recorded links without the merge intent marker.
+          const inserted = await scope.client.query(
+            `insert into git_webhook_deliveries
+               (organization_id, receiver_id, provider, receiver_revision, digest, work)
+             values ($1, $2, 'github', 1, $3, $4::jsonb) returning id`,
+            [
+              gitOrganizationId,
+              gitReceiverId,
+              digest.repeat(64),
+              JSON.stringify({ mapping, fact, recordLink: true }),
+            ],
+          );
+          const id = (inserted.rows[0] as { readonly id: string }).id;
+          await service()
+            .get(GitDispatchJobsProducer)
+            .enqueue(scope, id, 'CAD-498', { recordLink: true });
+          const queued = await scope.client.query(
+            "select name from pgboss.job where data->'payload'->>'deliveryId' = $1",
+            [id],
+          );
+          expect(queued.rows).toEqual([{ name: GIT_LINK_DISPATCH_QUEUE.name }]);
+          return id;
+        }),
+      );
+    const request = {
+      kind: 'actionable',
+      requestNumber: 231,
+      taskKeys: ['CAD-498'],
+      closingTaskKeys: ['CAD-498'],
+    };
+    await receipt({ ...request, trigger: 'pr_open', closingTaskKeys: [] }, '1');
+    const path = '/internal/v1/tasks/CAD-498/git-status-actions';
+    await vi.waitFor(
+      () => {
+        expect(taskCommands.filter((command) => command.path === path)).toHaveLength(1);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    const merge = await receipt({ ...request, trigger: 'pr_merged' }, '2');
+    await vi.waitFor(
+      async () => {
+        const intent = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+          tenant.run(({ client }) =>
+            client.query(
+              "select status, disposition from git_merge_intents where task_key = 'CAD-498'",
+            ),
+          ),
+        );
+        expect(intent.rows).toEqual([{ status: 'handled', disposition: 'applied' }]);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    // The previous format keeps its direct done status under the claim key, without an intent job.
+    const commands = taskCommands.filter((command) => command.path === path);
+    expect(commands.map(({ body }) => (body as { readonly status: unknown }).status)).toEqual([
+      'review',
+      'done',
+    ]);
+    const claim = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+      tenant.run(({ client }) =>
+        client.query('select id from git_dispatch_claims where delivery_id = $1', [merge]),
+      ),
+    );
+    expect(commands[1]?.key).toBe((claim.rows[0] as { readonly id: string }).id);
+  });
+
   it('retains a signed closure admitted before the earlier opening can record the link', async () => {
     const taskKey = 'CAD-485';
     const path = `/internal/v1/tasks/${taskKey}/git-status-actions`;
@@ -743,7 +825,7 @@ describe('integration-service wiring', () => {
         () => {
           const deferred = enqueue.mock.calls.filter(
             ([, queue, payload, options]) =>
-              queue === GIT_LINK_DISPATCH_QUEUE.name &&
+              queue === GIT_LINK_DISPATCH_V2_QUEUE.name &&
               typeof payload === 'object' &&
               payload !== null &&
               'deliveryId' in payload &&
@@ -761,7 +843,7 @@ describe('integration-service wiring', () => {
               where name = $1 and data->>'organizationId' = $2
                 and data->'payload'->>'deliveryId' = $3 and data->'payload'->>'taskKey' = $4
                 and start_after > created_on`,
-            [GIT_LINK_DISPATCH_QUEUE.name, gitOrganizationId, row.id, taskKey],
+            [GIT_LINK_DISPATCH_V2_QUEUE.name, gitOrganizationId, row.id, taskKey],
           );
           expect(deferredJob.rows.length).toBeGreaterThan(0);
         },
@@ -1171,7 +1253,7 @@ describe('integration-service wiring', () => {
     const interrupted = vi
       .spyOn(producer, 'enqueue')
       .mockImplementationOnce(async (transaction, queue, payload, options) => {
-        expect(queue).toBe(GIT_LINK_DISPATCH_QUEUE.name);
+        expect(queue).toBe(GIT_LINK_DISPATCH_V2_QUEUE.name);
         const result = await enqueue(transaction, queue, payload, options);
         const stored = await transaction.client.query(
           'select id from pgboss.job where name = $1 and id = $2',
@@ -1208,7 +1290,7 @@ describe('integration-service wiring', () => {
       );
     expect((await receiptCounts()).rows).toEqual([{ receipts: 0, aliases: 0 }]);
     const leftover = await migrator.query('select id from pgboss.job where name = $1 and id = $2', [
-      GIT_LINK_DISPATCH_QUEUE.name,
+      GIT_LINK_DISPATCH_V2_QUEUE.name,
       firstJobId,
     ]);
     expect(leftover.rows).toEqual([]);

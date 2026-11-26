@@ -208,7 +208,7 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     });
     if (work !== null && this.jobs !== undefined) {
       for (const taskKey of work.fact.taskKeys) {
-        await this.jobs.enqueue(this.scope, receipt.id, taskKey, work.recordLink === true);
+        await this.jobs.enqueue(this.scope, receipt.id, taskKey, work);
       }
     }
     return 'accepted';

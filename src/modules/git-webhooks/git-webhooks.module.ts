@@ -15,6 +15,7 @@ import type { AppConfig } from '../../config/app-config.js';
 import {
   GIT_DISPATCH_QUEUE,
   GIT_LINK_DISPATCH_QUEUE,
+  GIT_LINK_DISPATCH_V2_QUEUE,
   GIT_LINK_MAINTENANCE_QUEUE,
   GIT_MERGE_INTENT_QUEUE,
   GIT_PURGE_QUEUE,
@@ -57,6 +58,7 @@ import { GitPurgeJobHandler } from './presentation/jobs/handlers/purge/git-purge
 import { TaskPurgedHandler } from './presentation/messaging/handlers/purge/task-purged.handler.js';
 
 const linkDispatchWorker = Symbol('GitLinkDispatchWorker');
+const versionedLinkDispatchWorker = Symbol('GitLinkDispatchV2Worker');
 const taskAction = Symbol('GitTaskAction');
 
 async function createTaskAction(config: AppConfig): Promise<GitTaskAction> {
@@ -194,6 +196,12 @@ function linksMaintained(config: AppConfig): boolean {
       inject: [JobWorkerRegistry, DispatchGitDelivery],
       useFactory: (workers: JobWorkerRegistry, dispatch: DispatchGitDelivery) =>
         new GitDispatchJobHandler(workers, dispatch, GIT_LINK_DISPATCH_QUEUE.name),
+    },
+    {
+      provide: versionedLinkDispatchWorker,
+      inject: [JobWorkerRegistry, DispatchGitDelivery],
+      useFactory: (workers: JobWorkerRegistry, dispatch: DispatchGitDelivery) =>
+        new GitDispatchJobHandler(workers, dispatch, GIT_LINK_DISPATCH_V2_QUEUE.name),
     },
     // Like the link dispatch worker, these run whatever the flags: a draining link queue still
     // records merge intents, which must be submitted, and links that must be maintained.

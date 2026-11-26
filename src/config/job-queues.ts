@@ -20,6 +20,16 @@ export const GIT_LINK_DISPATCH_QUEUE = {
   retryDelaySeconds: 2,
 } as const satisfies JobQueueDeclaration;
 
+/**
+ * Link receipts in the current format: merge intents and the reopen, member update and head
+ * check facts. Only workers that know them consume this queue, while workers of the previous
+ * release keep draining `integration.dispatch-git-link` during a rolling deployment.
+ */
+export const GIT_LINK_DISPATCH_V2_QUEUE = {
+  ...GIT_LINK_DISPATCH_QUEUE,
+  name: 'integration.dispatch-git-link.v2',
+} as const satisfies JobQueueDeclaration;
+
 /** Continues link removals after the first transaction marks a task as permanently purged. */
 export const GIT_PURGE_QUEUE = {
   name: 'integration.purge-task-git-links',
