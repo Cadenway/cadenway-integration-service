@@ -77,7 +77,9 @@ function position(cursor: { readonly sort: readonly unknown[]; readonly id: stri
   if (
     cursor.sort.length !== 1 ||
     typeof createdAt !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(createdAt) ||
     Number.isNaN(Date.parse(createdAt)) ||
+    new Date(createdAt).toISOString() !== createdAt ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(cursor.id)
   ) {
     return invalidRequest();

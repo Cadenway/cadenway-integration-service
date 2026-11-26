@@ -1,5 +1,5 @@
 import { ListTaskGitLinksInternalResponse } from '@cadenway/contracts/validators/internal/integration-service';
-import { runWithOrganizationContext } from '@cadenway/nest-common';
+import { encodeCursor, runWithOrganizationContext } from '@cadenway/nest-common';
 import type { Request } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -114,6 +114,25 @@ describe('GitLinksController', () => {
     const controller = new GitLinksController({ execute } as unknown as ListTaskGitLinks);
     await expect(
       inOrganization(organizationId, () => controller.list(request(query, taskKey))),
+    ).rejects.toMatchObject({ problem: { status: 400, code: 'request.invalid' } });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['2026-11-08T08:40:00Z', link.id],
+    ['2026-02-30T08:40:00.000Z', link.id],
+    ['2026-11-08 08:40:00.000', link.id],
+    ['not a time', link.id],
+    [link.createdAt, link.id.toUpperCase()],
+  ])('refuses a cursor positioned at %s / %s with request.invalid', async (createdAt, id) => {
+    const execute = vi.fn();
+    const controller = new GitLinksController({ execute } as unknown as ListTaskGitLinks);
+    const cursor = encodeCursor(
+      { sort: [createdAt], id },
+      { operation: 'listTaskGitLinksInternal', organizationId, taskKey: 'CAD-482' },
+    );
+    await expect(
+      inOrganization(organizationId, () => controller.list(request({ cursor }))),
     ).rejects.toMatchObject({ problem: { status: 400, code: 'request.invalid' } });
     expect(execute).not.toHaveBeenCalled();
   });
