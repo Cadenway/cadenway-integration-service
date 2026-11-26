@@ -1,9 +1,11 @@
 import {
   GIT_BRANCH_CREATED_V1,
   GIT_CHECKS_COMPLETED_V1,
+  GIT_LINK_UPDATED_V1,
   GIT_PR_CLOSED_V1,
   GIT_PR_MERGED_V1,
   GIT_PR_OPENED_V1,
+  GIT_PR_REOPENED_V1,
   eventSchemas,
 } from '@cadenway/contracts/events/integration-service';
 import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/database';
@@ -16,8 +18,9 @@ const pullRequestEventName = {
   'pull-request-opened': GIT_PR_OPENED_V1,
   'pull-request-merged': GIT_PR_MERGED_V1,
   'pull-request-closed': GIT_PR_CLOSED_V1,
+  'pull-request-reopened': GIT_PR_REOPENED_V1,
 } as const satisfies Record<
-  Exclude<GitLinkChanged['type'], 'branch-created' | 'checks-completed'>,
+  Exclude<GitLinkChanged['type'], 'branch-created' | 'checks-completed' | 'link-updated'>,
   keyof typeof eventSchemas
 >;
 
@@ -73,14 +76,23 @@ export class GitLinkChangedOutbox {
       gitLinkId: change.gitLinkId,
     };
 
-    if (change.event.type === 'branch-created') {
+    const { event } = change;
+    if (event.type === 'link-updated') {
+      if (event.changed.length === 0) throw new Error('A Git link update names no member.');
+      await this.writer.append(scope, eventSchemas, GIT_LINK_UPDATED_V1, {
+        ...data,
+        changed: [...event.changed],
+      });
+      return;
+    }
+    if (event.type === 'branch-created') {
       await this.writer.append(scope, eventSchemas, GIT_BRANCH_CREATED_V1, {
         ...data,
         changed: ['branch'],
       });
       return;
     }
-    if (change.event.type === 'checks-completed') {
+    if (event.type === 'checks-completed') {
       await this.writer.append(scope, eventSchemas, GIT_CHECKS_COMPLETED_V1, {
         ...data,
         changed: ['checks'],
@@ -88,7 +100,7 @@ export class GitLinkChangedOutbox {
       return;
     }
 
-    await this.writer.append(scope, eventSchemas, pullRequestEventName[change.event.type], {
+    await this.writer.append(scope, eventSchemas, pullRequestEventName[event.type], {
       ...data,
       changed: ['state'],
     });

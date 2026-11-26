@@ -294,6 +294,7 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
       throw new Error('Invalid Git dispatch snapshot.');
     return {
       organizationId: row.organizationId,
+      deliveryId: row.deliveryId,
       commandKey: row.id,
       taskKey: row.taskKey,
       receiverRevision: delivery.receiverRevision,

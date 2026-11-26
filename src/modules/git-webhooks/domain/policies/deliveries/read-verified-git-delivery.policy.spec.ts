@@ -90,7 +90,7 @@ describe('readVerifiedGitDelivery', () => {
         ...githubCreate,
         repository: { ...githubRepository, full_name: 'atelier-nord/new-web' },
       }),
-    ).toEqual({
+    ).toMatchObject({
       kind: 'actionable',
       trigger: 'branch',
       branch: 'cad-482-ecran-connexion-sso',
@@ -100,7 +100,7 @@ describe('readVerifiedGitDelivery', () => {
   });
 
   it('recognizes the opened GitHub PR for CAD-482 once despite case and repeated mentions', () => {
-    expect(readVerifiedGitDelivery(githubBinding, githubPullRequest)).toEqual({
+    expect(readVerifiedGitDelivery(githubBinding, githubPullRequest)).toMatchObject({
       kind: 'actionable',
       trigger: 'pr_open',
       requestNumber: 214,
@@ -123,9 +123,9 @@ describe('readVerifiedGitDelivery', () => {
   });
 
   it('records a same-repository GitHub synchronize as a head-only observation', () => {
-    expect(readVerifiedGitDelivery(githubBinding, githubSync)).toEqual({
+    expect(readVerifiedGitDelivery(githubBinding, githubSync)).toMatchObject({
       kind: 'actionable',
-      trigger: 'pr_head',
+      trigger: 'pr_updated',
       requestNumber: 214,
       head: { sha: observedHead, observedAtMs: Date.UTC(2026, 10, 8, 20, 18, 44) },
       taskKeys: [],
@@ -177,7 +177,7 @@ describe('readVerifiedGitDelivery', () => {
           body: 'Fixes CAD-473, closes cad-482 and resolves CAD-466. References CAD-475.',
         },
       }),
-    ).toEqual({
+    ).toMatchObject({
       kind: 'actionable',
       trigger: 'pr_merged',
       requestNumber: 214,
@@ -198,7 +198,7 @@ describe('readVerifiedGitDelivery', () => {
           body: 'Fixes CAD-473.',
         },
       }),
-    ).toEqual({
+    ).toMatchObject({
       kind: 'actionable',
       trigger: 'pr_closed',
       requestNumber: 214,
@@ -225,7 +225,7 @@ describe('readVerifiedGitDelivery', () => {
             title: 'Login improvements',
           },
         }),
-      ).toEqual({
+      ).toMatchObject({
         kind: 'actionable',
         trigger,
         requestNumber: 214,
@@ -283,7 +283,7 @@ describe('readVerifiedGitDelivery', () => {
   );
 
   it('recognizes a new GitLab branch and references from the signed commits', () => {
-    expect(readVerifiedGitDelivery(gitlabBinding, gitlabNewBranch)).toEqual({
+    expect(readVerifiedGitDelivery(gitlabBinding, gitlabNewBranch)).toMatchObject({
       kind: 'actionable',
       trigger: 'branch',
       branch: 'cad-479-limite-debit-jetons',
@@ -293,7 +293,7 @@ describe('readVerifiedGitDelivery', () => {
   });
 
   it('recognizes the GitLab MR from its signed kind, action, state and project identities', () => {
-    expect(readVerifiedGitDelivery(gitlabBinding, gitlabMergeRequest)).toEqual({
+    expect(readVerifiedGitDelivery(gitlabBinding, gitlabMergeRequest)).toMatchObject({
       kind: 'actionable',
       trigger: 'pr_open',
       requestNumber: 31,
@@ -310,7 +310,7 @@ describe('readVerifiedGitDelivery', () => {
           description: 'Resolves CAD-466.',
         },
       }),
-    ).toEqual({
+    ).toMatchObject({
       kind: 'actionable',
       trigger: 'pr_merged',
       requestNumber: 31,
@@ -336,9 +336,9 @@ describe('readVerifiedGitDelivery', () => {
   });
 
   it('records a GitLab update with a changed revision as a head-only observation', () => {
-    expect(readVerifiedGitDelivery(gitlabBinding, gitlabUpdate)).toEqual({
+    expect(readVerifiedGitDelivery(gitlabBinding, gitlabUpdate)).toMatchObject({
       kind: 'actionable',
-      trigger: 'pr_head',
+      trigger: 'pr_updated',
       requestNumber: 31,
       head: { sha: observedHead, observedAtMs: Date.UTC(2026, 10, 8, 20, 18, 44, 125) },
       taskKeys: [],
@@ -347,21 +347,22 @@ describe('readVerifiedGitDelivery', () => {
   });
 
   it.each([
-    { oldrev: undefined },
     { oldrev: observedHead },
     { last_commit: { id: '0'.repeat(40) } },
     { updated_at: undefined },
     { updated_at: '2026-11-08T20:18:44' },
-    { state: 'closed' },
     { target_project_id: 702 },
-  ])('ignores a GitLab MR update without same-project code change evidence', (overrides) => {
-    expect(
-      readVerifiedGitDelivery(gitlabBinding, {
-        ...gitlabUpdate,
-        object_attributes: { ...gitlabUpdate.object_attributes, ...overrides },
-      }),
-    ).toEqual({ kind: 'ignored' });
-  });
+  ])(
+    'ignores a GitLab MR update with contradictory revision, time or project evidence',
+    (overrides) => {
+      expect(
+        readVerifiedGitDelivery(gitlabBinding, {
+          ...gitlabUpdate,
+          object_attributes: { ...gitlabUpdate.object_attributes, ...overrides },
+        }),
+      ).toEqual({ kind: 'ignored' });
+    },
+  );
 
   it('recognizes a GitLab close in the same project and drops closing intent', () => {
     expect(
@@ -374,7 +375,7 @@ describe('readVerifiedGitDelivery', () => {
           description: 'Resolves CAD-473.',
         },
       }),
-    ).toEqual({
+    ).toMatchObject({
       kind: 'actionable',
       trigger: 'pr_closed',
       requestNumber: 31,
@@ -400,7 +401,7 @@ describe('readVerifiedGitDelivery', () => {
             last_commit: { message: 'Update the login screen' },
           },
         }),
-      ).toEqual({
+      ).toMatchObject({
         kind: 'actionable',
         trigger,
         requestNumber: 31,
@@ -515,6 +516,199 @@ describe('readVerifiedGitDelivery', () => {
       trigger: 'pr_merged',
       taskKeys: [],
       closingTaskKeys: [],
+    });
+  });
+
+  describe('request state and GitLink members', () => {
+    const updatedAt = '2026-11-08T10:41:00Z';
+    const observedAtMs = Date.UTC(2026, 10, 8, 10, 41);
+    const githubRequest = {
+      ...githubPullRequest,
+      pull_request: {
+        ...githubPullRequest.pull_request,
+        html_url: 'https://github.com/atelier-nord/web/pull/214',
+        draft: false,
+        user: { login: 'cmartin' },
+        requested_reviewers: [{ login: 'irobert' }],
+        requested_teams: [],
+        additions: 418,
+        deletions: 132,
+        head: { ...githubPullRequest.pull_request.head, sha: observedHead },
+        updated_at: updatedAt,
+      },
+      repository: { ...githubRepository, html_url: 'https://github.com/atelier-nord/web' },
+    };
+    const githubMembers = {
+      title: githubPullRequest.pull_request.title,
+      draft: false,
+      url: 'https://github.com/atelier-nord/web/pull/214',
+      repository: { fullName: 'atelier-nord/web', url: 'https://github.com/atelier-nord/web' },
+      sourceBranch: 'cad-482-ecran-connexion-sso',
+      author: { login: 'cmartin' },
+      reviewRequested: true,
+      additions: 418,
+      deletions: 132,
+    };
+
+    it('records the members and provider time of an opened GitHub PR and where CAD-482 was found', () => {
+      expect(readVerifiedGitDelivery(githubBinding, githubRequest)).toEqual({
+        kind: 'actionable',
+        trigger: 'pr_open',
+        requestNumber: 214,
+        head: { sha: observedHead, observedAtMs },
+        request: { state: { state: 'open', observedAtMs }, members: githubMembers },
+        taskKeys: ['CAD-482'],
+        closingTaskKeys: [],
+        linkSources: { 'CAD-482': 'branch' },
+      });
+    });
+
+    it('recognizes a GitHub reopen as a lifecycle fact for existing links', () => {
+      expect(
+        readVerifiedGitDelivery(githubBinding, { ...githubRequest, action: 'reopened' }),
+      ).toMatchObject({
+        trigger: 'pr_reopened',
+        request: { state: { state: 'open', observedAtMs } },
+      });
+    });
+
+    it.each([
+      'edited',
+      'ready_for_review',
+      'converted_to_draft',
+      'review_requested',
+      'review_request_removed',
+    ])('admits the GitHub %s action as a member update without task discovery', (action) => {
+      expect(readVerifiedGitDelivery(githubBinding, { ...githubRequest, action })).toEqual({
+        kind: 'actionable',
+        trigger: 'pr_updated',
+        requestNumber: 214,
+        head: { sha: observedHead, observedAtMs },
+        request: { state: { state: 'open', observedAtMs }, members: githubMembers },
+        taskKeys: [],
+        closingTaskKeys: [],
+      });
+    });
+
+    it('reports the merged state of a GitHub edit after the merge, for realignment', () => {
+      expect(
+        readVerifiedGitDelivery(githubBinding, {
+          ...githubRequest,
+          action: 'edited',
+          pull_request: { ...githubRequest.pull_request, state: 'closed', merged: true },
+        }),
+      ).toMatchObject({ trigger: 'pr_updated', request: { state: { state: 'merged' } } });
+    });
+
+    it('ignores a GitHub member update without a provider time to order it', () => {
+      expect(
+        readVerifiedGitDelivery(githubBinding, {
+          ...githubRequest,
+          action: 'edited',
+          pull_request: { ...githubRequest.pull_request, updated_at: undefined },
+        }),
+      ).toEqual({ kind: 'ignored' });
+    });
+
+    it('treats empty reviewer lists as no requested review', () => {
+      expect(
+        readVerifiedGitDelivery(githubBinding, {
+          ...githubRequest,
+          action: 'review_request_removed',
+          pull_request: { ...githubRequest.pull_request, requested_reviewers: [] },
+        }),
+      ).toMatchObject({ request: { members: { reviewRequested: false } } });
+    });
+
+    it('records the GitHub branch address, repository and creator', () => {
+      expect(
+        readVerifiedGitDelivery(githubBinding, {
+          ...githubCreate,
+          repository: { ...githubRepository, html_url: 'https://github.com/atelier-nord/web' },
+          sender: { login: 'irobert' },
+        }),
+      ).toMatchObject({
+        trigger: 'branch',
+        members: {
+          url: 'https://github.com/atelier-nord/web/tree/cad-482-ecran-connexion-sso',
+          repository: { fullName: 'atelier-nord/web', url: 'https://github.com/atelier-nord/web' },
+          author: { login: 'irobert' },
+        },
+        linkSources: { 'CAD-482': 'branch' },
+      });
+    });
+
+    it('records the GitLab branch address and pusher and finds CAD-482 in a commit', () => {
+      expect(
+        readVerifiedGitDelivery(gitlabBinding, {
+          ...gitlabNewBranch,
+          project: { ...gitlabProject, web_url: 'https://gitlab.example/atelier-nord/auth' },
+          user_username: 'cmartin',
+          user_name: 'Camille Martin',
+        }),
+      ).toMatchObject({
+        trigger: 'branch',
+        members: {
+          url: 'https://gitlab.example/atelier-nord/auth/-/tree/cad-479-limite-debit-jetons',
+          author: { login: 'cmartin', name: 'Camille Martin' },
+        },
+        linkSources: { 'CAD-479': 'branch', 'CAD-482': 'commit' },
+      });
+    });
+
+    it('records the GitLab opener only from the opening delivery', () => {
+      const opening = {
+        ...gitlabMergeRequest,
+        user: { username: 'cmartin', name: 'Camille Martin' },
+        reviewers: [{ username: 'irobert' }],
+        object_attributes: {
+          ...gitlabMergeRequest.object_attributes,
+          url: 'https://gitlab.example/atelier-nord/auth/-/merge_requests/31',
+          draft: true,
+          updated_at: updatedAt,
+        },
+      };
+      expect(readVerifiedGitDelivery(gitlabBinding, opening)).toMatchObject({
+        trigger: 'pr_open',
+        request: {
+          state: { state: 'open', observedAtMs },
+          members: {
+            draft: true,
+            url: 'https://gitlab.example/atelier-nord/auth/-/merge_requests/31',
+            author: { login: 'cmartin', name: 'Camille Martin' },
+            reviewRequested: true,
+          },
+        },
+        linkSources: { 'CAD-466': 'title', 'CAD-482': 'commit' },
+      });
+      const update = readVerifiedGitDelivery(gitlabBinding, {
+        ...opening,
+        object_attributes: { ...opening.object_attributes, action: 'update', draft: false },
+      });
+      expect(update).toMatchObject({
+        trigger: 'pr_updated',
+        request: { members: { draft: false } },
+      });
+      expect(update).not.toHaveProperty('request.members.author');
+    });
+
+    it('recognizes a GitLab reopen and a closed-state update', () => {
+      expect(
+        readVerifiedGitDelivery(gitlabBinding, {
+          ...gitlabMergeRequest,
+          object_attributes: { ...gitlabMergeRequest.object_attributes, action: 'reopen' },
+        }),
+      ).toMatchObject({ trigger: 'pr_reopened' });
+      expect(
+        readVerifiedGitDelivery(gitlabBinding, {
+          ...gitlabUpdate,
+          object_attributes: {
+            ...gitlabUpdate.object_attributes,
+            oldrev: undefined,
+            state: 'closed',
+          },
+        }),
+      ).toMatchObject({ trigger: 'pr_updated', request: { state: { state: 'closed' } } });
     });
   });
 });

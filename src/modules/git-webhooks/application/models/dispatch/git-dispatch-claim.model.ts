@@ -7,6 +7,9 @@ export interface GitDispatchClaim {
   /** Tenant of the receiver and of the outbound Task command. */
   readonly organizationId: string;
 
+  /** Admitted delivery receipt the claim settles. */
+  readonly deliveryId: string;
+
   /** Stable Task command key, reused for every retry of this delivery and task. */
   readonly commandKey: string;
   readonly taskKey: string;

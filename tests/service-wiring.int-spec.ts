@@ -83,8 +83,10 @@ const platformTables = [
   'processed_events',
 ] as const;
 const gitTables = [
+  'git_check_observations',
   'git_dispatch_claims',
   'git_links',
+  'git_merge_intents',
   'git_purged_tasks',
   'git_repository_mappings',
   'git_webhook_deliveries',
@@ -465,7 +467,7 @@ describe('integration-service wiring', () => {
         tableowner: 'integration_migrator',
       })),
     );
-    expect(journal.rows).toEqual([{ applied: 8 }]);
+    expect(journal.rows).toEqual([{ applied: 9 }]);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -474,7 +476,7 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 8 }]);
+    expect(journal.rows).toEqual([{ applied: 9 }]);
   });
 
   it('retains a signed closure admitted before the earlier opening can record the link', async () => {
@@ -742,7 +744,8 @@ describe('integration-service wiring', () => {
         async () => {
           expect((await events()).rows).toEqual([
             { event_name: 'git.pr-opened.v1', version: 1 },
-            { event_name: 'git.checks-completed.v1', version: 2 },
+            // The suite was stored before the opening created the link, which announces it.
+            { event_name: 'git.link-updated.v1', version: 2 },
           ]);
         },
         { timeout: 15_000, interval: 100 },
@@ -750,7 +753,7 @@ describe('integration-service wiring', () => {
       await send(checkBody, checkId, 'check_suite').expect(204);
       expect((await events()).rows).toEqual([
         { event_name: 'git.pr-opened.v1', version: 1 },
-        { event_name: 'git.checks-completed.v1', version: 2 },
+        { event_name: 'git.link-updated.v1', version: 2 },
       ]);
       const commands = taskCommands.filter(({ path: commandPath }) => commandPath === path);
       const reviewKeys = commands
@@ -763,12 +766,23 @@ describe('integration-service wiring', () => {
         )
         .map(({ key }) => key);
       expect(new Set(reviewKeys).size).toBe(1);
-      expect(
-        commands.filter(
-          ({ body }) =>
-            typeof body === 'object' && body !== null && 'status' in body && body.status === null,
-        ),
-      ).toHaveLength(1);
+      // The deferred check still authorizes its target once, and changes nothing more.
+      await vi.waitFor(
+        () => {
+          expect(
+            taskCommands.filter(
+              ({ path: commandPath, body }) =>
+                commandPath === path &&
+                typeof body === 'object' &&
+                body !== null &&
+                'status' in body &&
+                body.status === null,
+            ),
+          ).toHaveLength(1);
+        },
+        { timeout: 15_000, interval: 100 },
+      );
+      expect((await events()).rows).toHaveLength(2);
     } finally {
       heldTaskReply = undefined;
       release();
@@ -851,19 +865,22 @@ describe('integration-service wiring', () => {
       },
       { timeout: 15_000, interval: 50 },
     );
-    for (const [taskKey, status] of [
-      ['CAD-486', null],
-      ['CAD-487', 'done'],
-    ] as const) {
-      expect(
-        taskCommands
-          .filter(({ path }) => path === `/internal/v1/tasks/${taskKey}/git-status-actions`)
-          .map(({ body }) => body),
-      ).toEqual([
-        expect.objectContaining({ status: 'review' }),
-        expect.objectContaining({ status }),
-      ]);
-    }
+    // The merge only authorizes each link; the merge intent of CAD-487 then submits done.
+    await vi.waitFor(
+      () => {
+        for (const [taskKey, statuses] of [
+          ['CAD-486', ['review', null]],
+          ['CAD-487', ['review', null, 'done']],
+        ] as const) {
+          expect(
+            taskCommands
+              .filter(({ path }) => path === `/internal/v1/tasks/${taskKey}/git-status-actions`)
+              .map(({ body }) => body),
+          ).toEqual(statuses.map((status) => expect.objectContaining({ status }) as unknown));
+        }
+      },
+      { timeout: 15_000, interval: 50 },
+    );
   });
 
   it('accepts one pending Git action for two signed deliveries of the same raw body', async () => {
@@ -873,7 +890,7 @@ describe('integration-service wiring', () => {
       organizationId: null,
     });
     const repository = { id: 81 };
-    const sha = 'a'.repeat(40);
+    const sha = 'e'.repeat(40);
     const branch = 'cad-482-ecran-connexion-sso';
     const payload = {
       repository,
@@ -948,11 +965,12 @@ describe('integration-service wiring', () => {
         const links = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
           tenant.run((transaction) =>
             transaction.client.query(
-              `select link.task_key, link.status, link.version::int, event.event_name, event.payload
+              `select link.task_key, link.status, (event.payload->>'version')::int as version,
+                      event.event_name, event.payload
                  from git_links link join outbox_events event
                    on event.organization_id = link.organization_id
                    and event.payload->>'gitLinkId' = link.id::text
-                 where link.task_key = 'CAD-482'`,
+                 where link.task_key = 'CAD-482' and event.event_name = 'git.pr-opened.v1'`,
             ),
           ),
         );
@@ -1382,7 +1400,7 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 8 }]);
+    expect(journal.rows).toEqual([{ applied: 9 }]);
   });
 
   it('publishes successive outbox events and remains ready', async () => {

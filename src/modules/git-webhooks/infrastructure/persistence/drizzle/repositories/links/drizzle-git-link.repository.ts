@@ -1,20 +1,44 @@
 import { createHash } from 'node:crypto';
 
 import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/database';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, type SQL, sql } from 'drizzle-orm';
 
+import { decideGitLinkUpdate } from '../../../../../domain/policies/links/decide-git-link-update.policy.js';
+import { gitLinkDeliveryOf } from '../../../../../domain/policies/links/git-link-change.policy.js';
 import type { GitLinkChanged } from '../../../../../domain/events/links/git-link-changed.event.js';
-import { decideGitLinkChange } from '../../../../../domain/policies/links/git-link-change.policy.js';
 import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/deliveries/verified-git-delivery.value-object.js';
 import type { GitReceiverBinding } from '../../../../../domain/value-objects/deliveries/git-receiver-binding.value-object.js';
+import type { GitCheckObservation } from '../../../../../domain/value-objects/checks/git-check-observation.value-object.js';
 import type { GitLinkIdentity } from '../../../../../domain/value-objects/links/git-link-identity.value-object.js';
+import type { GitLinkProjection } from '../../../../../domain/value-objects/links/git-link-projection.value-object.js';
+import { DrizzleGitCheckObservationRepository } from '../checks/drizzle-git-check-observation.repository.js';
 import { gitLinks } from '../../schemas/links/git-links.schema.js';
 import { gitPurgedTasks } from '../../schemas/links/git-purged-tasks.schema.js';
 
 type GitLinkFact = Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
+type Row = typeof gitLinks.$inferSelect;
+type ProjectionColumns = Omit<
+  typeof gitLinks.$inferInsert,
+  | 'organizationId'
+  | 'id'
+  | 'receiverId'
+  | 'provider'
+  | 'taskId'
+  | 'taskKey'
+  | 'identityHash'
+  | 'identity'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'reconciliationPendingSince'
+> & { readonly reconciliationPendingSince?: SQL | null };
 
 /** Persists material changes inside the caller's locked dispatch transaction. */
 export class DrizzleGitLinkRepository {
+  // #region Constructor
+  /** Reads the stored check observations of the link's repository. */
+  public constructor(private readonly observations = new DrizzleGitCheckObservationRepository()) {}
+  // #endregion
+
   // #region Methods
   /** Finds the tasks linked to the exact verified request, or null if the set exceeds its bound. */
   public async findRequestTaskKeys(
@@ -69,13 +93,21 @@ export class DrizzleGitLinkRepository {
     return [...keys];
   }
 
-  /** Reserves a stable link ID and returns only a new fact for the caller's outbox. */
+  /**
+   * Applies one delivery to the link of one task under the task lock and the link row lock,
+   * which serialize deliveries for the same link. Returns the stable link ID with the facts the
+   * caller appends in the same transaction, or null when no link exists or may be created.
+   */
   public async record(
     scope: TransactionScope<DatabaseSchema>,
     identity: GitLinkIdentity,
     fact: GitLinkFact,
     taskKey: string,
-  ): Promise<{ readonly id: string; readonly event: GitLinkChanged } | null> {
+  ): Promise<{
+    readonly id: string;
+    readonly events: readonly GitLinkChanged[];
+    readonly reconciliation: 'marked' | 'cleared' | 'unchanged';
+  } | null> {
     if (scope.kind !== 'tenant' || scope.organizationId !== identity.organizationId) {
       throw new Error('Git link does not belong to the tenant transaction.');
     }
@@ -108,117 +140,53 @@ export class DrizzleGitLinkRepository {
     );
     const rows = await scope.db.select().from(gitLinks).where(conditions).limit(1).for('update');
     const current = rows[0];
-    if (current !== undefined && current.taskKey !== taskKey) {
-      throw new Error('The Git link task key does not match its stored identity.');
-    }
+    if (current !== undefined) assertStoredIdentity(current, identity, taskKey);
     if (
-      current !== undefined &&
-      (current.identity.organizationId !== identity.organizationId ||
-        current.identity.receiverId !== identity.receiverId ||
-        current.identity.taskId !== identity.taskId ||
-        current.identity.kind !== identity.kind ||
-        !sameBinding(current.identity.binding, identity.binding) ||
-        (identity.kind === 'branch' &&
-          (current.identity.kind !== 'branch' || current.identity.ref !== identity.ref)) ||
-        (identity.kind === 'pull-request' &&
-          (current.identity.kind !== 'pull-request' ||
-            current.identity.requestNumber !== identity.requestNumber)))
-    ) {
-      throw new Error('The Git link does not match its stored identity.');
-    }
-    if (
-      current === undefined &&
-      (fact.trigger === 'pr_head' ||
-        fact.trigger === 'pr_checks' ||
-        fact.trigger === 'pr_closed' ||
-        (fact.trigger === 'pr_merged' &&
-          fact.referencedTaskKeys !== undefined &&
-          !fact.referencedTaskKeys.includes(taskKey)))
-    ) {
-      return null;
-    }
-    if (fact.trigger === 'pr_checks') {
-      if (
-        identity.kind !== 'pull-request' ||
+      fact.trigger === 'pr_checks' &&
+      (identity.kind !== 'pull-request' ||
         identity.requestNumber !== fact.requestNumber ||
-        fact.checks.requestNumber !== fact.requestNumber
-      ) {
-        throw new Error('The verified checks do not match the Git request identity.');
-      }
-      if (current?.headSha !== fact.checks.headSha) return null;
-      const { attemptId, completedAtMs } = fact.checks;
-      if (
-        current.headFirstObservedAtMs === null ||
-        completedAtMs < current.headFirstObservedAtMs ||
-        (current.checksCompletedAtMs !== null &&
-          (completedAtMs < current.checksCompletedAtMs ||
-            (completedAtMs === current.checksCompletedAtMs &&
-              attemptId <= (current.checksAttemptId ?? 0))))
-      ) {
-        return null;
-      }
-      const version = current.version + 1;
-      if (!Number.isSafeInteger(version)) throw new Error('Git link version exhausted.');
-      await scope.db
-        .update(gitLinks)
-        .set({
-          checksAttemptId: attemptId,
-          checksCompletedAtMs: completedAtMs,
-          version,
-          updatedAt: sql`now()`,
-        })
-        .where(
-          and(eq(gitLinks.organizationId, identity.organizationId), eq(gitLinks.id, current.id)),
-        );
-      return { id: current.id, event: { type: 'checks-completed', version } };
+        fact.checks.requestNumber !== fact.requestNumber)
+    ) {
+      throw new Error('The verified checks do not match the Git request identity.');
     }
-    const head = fact.trigger === 'branch' ? undefined : fact.head;
-    const headUpdate =
-      head !== undefined &&
-      (current?.headLastObservedAtMs === null ||
-        current?.headLastObservedAtMs === undefined ||
-        head.observedAtMs > current.headLastObservedAtMs);
-    const headChanged = headUpdate && current?.headSha !== head.sha;
-    const headValues = headUpdate
-      ? {
-          headSha: head.sha,
-          headFirstObservedAtMs: headChanged ? head.observedAtMs : current?.headFirstObservedAtMs,
-          headLastObservedAtMs: head.observedAtMs,
-          ...(headChanged ? { checksAttemptId: null, checksCompletedAtMs: null } : {}),
-        }
-      : {};
-    // The domain compares the full stored identity, including the original ref, after hash lookup.
-    const change = decideGitLinkChange(
-      identity,
-      current === undefined
-        ? null
-        : { identity: current.identity, status: current.status, version: current.version },
-      fact,
-    );
-    if (change === null) {
-      if (current !== undefined && headUpdate) {
-        await scope.db
-          .update(gitLinks)
-          .set({ ...headValues, updatedAt: sql`now()` })
-          .where(
-            and(eq(gitLinks.organizationId, identity.organizationId), eq(gitLinks.id, current.id)),
+
+    const delivery = gitLinkDeliveryOf(fact, taskKey);
+    const heads = new Set<string>();
+    if (delivery.head !== null) heads.add(delivery.head.sha);
+    if (current?.headSha !== null && current?.headSha !== undefined) heads.add(current.headSha);
+    const observations =
+      identity.kind === 'branch'
+        ? new Map<string, readonly GitCheckObservation[]>()
+        : await this.observations.findForHeads(
+            scope,
+            {
+              organizationId: identity.organizationId,
+              receiverId: identity.receiverId,
+              provider: binding.provider,
+              repositoryId: binding.repositoryId,
+            },
+            [...heads],
           );
-      }
-      return null;
-    }
+    // The domain compares the full stored identity, including the original ref, after hash lookup.
+    const decision = decideGitLinkUpdate(
+      current === undefined ? null : toProjection(current),
+      delivery,
+      (headSha) => observations.get(headSha) ?? [],
+    );
+    if (decision === null) return null;
+
+    const values = toColumns(decision.projection, decision.reconciliation);
     if (current !== undefined) {
       await scope.db
         .update(gitLinks)
         .set({
-          ...headValues,
-          status: change.state.status,
-          version: change.state.version,
-          updatedAt: sql`now()`,
+          ...values,
+          ...(decision.events.length === 0 ? {} : { updatedAt: sql`now()` }),
         })
         .where(
           and(eq(gitLinks.organizationId, identity.organizationId), eq(gitLinks.id, current.id)),
         );
-      return { id: current.id, event: change.event };
+      return { id: current.id, events: decision.events, reconciliation: decision.reconciliation };
     }
     const inserted = await scope.db
       .insert(gitLinks)
@@ -230,14 +198,12 @@ export class DrizzleGitLinkRepository {
         taskKey,
         identityHash,
         identity,
-        ...headValues,
-        status: change.state.status,
-        version: change.state.version,
+        ...values,
       })
       .returning({ id: gitLinks.id });
     const row = inserted[0];
     if (row === undefined) throw new Error('Git link was not recorded.');
-    return { id: row.id, event: change.event };
+    return { id: row.id, events: decision.events, reconciliation: decision.reconciliation };
   }
 
   /** Records terminal purge and removes at most 500 links, returning whether another pass may be needed. */
@@ -286,6 +252,96 @@ export class DrizzleGitLinkRepository {
     );
   }
   // #endregion
+}
+
+function assertStoredIdentity(current: Row, identity: GitLinkIdentity, taskKey: string): void {
+  if (current.taskKey !== taskKey) {
+    throw new Error('The Git link task key does not match its stored identity.');
+  }
+  if (
+    current.identity.organizationId !== identity.organizationId ||
+    current.identity.receiverId !== identity.receiverId ||
+    current.identity.taskId !== identity.taskId ||
+    current.identity.kind !== identity.kind ||
+    !sameBinding(current.identity.binding, identity.binding) ||
+    (identity.kind === 'branch' &&
+      (current.identity.kind !== 'branch' || current.identity.ref !== identity.ref)) ||
+    (identity.kind === 'pull-request' &&
+      (current.identity.kind !== 'pull-request' ||
+        current.identity.requestNumber !== identity.requestNumber))
+  ) {
+    throw new Error('The Git link does not match its stored identity.');
+  }
+}
+
+/** Maps a stored row to the domain projection; absent members stay absent. */
+function toProjection(row: Row): GitLinkProjection {
+  const members: Record<string, unknown> = {
+    title: row.title,
+    draft: row.draft,
+    url: row.url,
+    repository: row.repository,
+    sourceBranch: row.sourceBranch,
+    author: row.author,
+    reviewRequested: row.reviewRequested,
+    additions: row.additions,
+    deletions: row.deletions,
+  };
+  return {
+    status: row.status,
+    version: row.version,
+    lifecycleObservedAtMs: row.lifecycleObservedAtMs,
+    members: Object.fromEntries(Object.entries(members).filter(([, value]) => value !== null)),
+    memberObservedAtMs: row.memberObservedAtMs,
+    linkSource: row.linkSource,
+    head:
+      row.headSha === null ||
+      row.headFirstObservedAtMs === null ||
+      row.headLastObservedAtMs === null
+        ? null
+        : {
+            sha: row.headSha,
+            firstObservedAtMs: row.headFirstObservedAtMs,
+            lastObservedAtMs: row.headLastObservedAtMs,
+          },
+    checks: row.checks,
+    checksCompletedAtMs: row.checksCompletedAtMs,
+    reconciliationPending: row.reconciliationPendingSince !== null,
+  };
+}
+
+function toColumns(
+  projection: GitLinkProjection,
+  reconciliation: 'marked' | 'cleared' | 'unchanged',
+): ProjectionColumns {
+  const { members } = projection;
+  return {
+    status: projection.status,
+    version: projection.version,
+    lifecycleObservedAtMs: projection.lifecycleObservedAtMs,
+    title: members.title ?? null,
+    draft: members.draft ?? null,
+    url: members.url ?? null,
+    repository: members.repository ?? null,
+    sourceBranch: members.sourceBranch ?? null,
+    author: members.author ?? null,
+    reviewRequested: members.reviewRequested ?? null,
+    additions: members.additions ?? null,
+    deletions: members.deletions ?? null,
+    linkSource: projection.linkSource,
+    memberObservedAtMs: projection.memberObservedAtMs,
+    headSha: projection.head?.sha ?? null,
+    headFirstObservedAtMs: projection.head?.firstObservedAtMs ?? null,
+    headLastObservedAtMs: projection.head?.lastObservedAtMs ?? null,
+    checksAttemptId: null,
+    checks: projection.checks,
+    checksCompletedAtMs: projection.checksCompletedAtMs,
+    ...(reconciliation === 'marked'
+      ? { reconciliationPendingSince: sql`now()` }
+      : reconciliation === 'cleared'
+        ? { reconciliationPendingSince: null }
+        : {}),
+  };
 }
 
 function linkHash(

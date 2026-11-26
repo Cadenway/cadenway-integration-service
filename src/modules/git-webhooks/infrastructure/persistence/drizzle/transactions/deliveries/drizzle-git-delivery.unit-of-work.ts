@@ -6,6 +6,8 @@ import type { GitRepositoryIdentity } from '../../../../../application/models/de
 import type { GitDeliveryTransaction } from '../../../../../application/ports/outbound/transactions/deliveries/git-delivery-transaction.port.js';
 import type { GitDispatchJobsProducer } from '../../../../jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 import { DrizzleGitRequestPredecessorsRepository } from '../../repositories/deliveries/drizzle-git-request-predecessors.repository.js';
+import type { GitCheckObservation } from '../../../../../domain/value-objects/checks/git-check-observation.value-object.js';
+import type { DrizzleGitCheckObservationRepository } from '../../repositories/checks/drizzle-git-check-observation.repository.js';
 import type { DrizzleGitLinkRepository } from '../../repositories/links/drizzle-git-link.repository.js';
 import { gitRepositoryMappings } from '../../schemas/deliveries/git-repository-mappings.schema.js';
 import {
@@ -28,10 +30,30 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     private readonly receiverRevision: number | null = null,
     private readonly jobs?: Pick<GitDispatchJobsProducer, 'enqueue'>,
     private readonly links?: Pick<DrizzleGitLinkRepository, 'findRequestTaskKeys'>,
+    private readonly observations?: Pick<DrizzleGitCheckObservationRepository, 'record'>,
   ) {}
   // #endregion
 
   // #region Methods
+  /** Keeps the observation for the mapped repository even before any link exists. */
+  public async recordCheckObservation(
+    binding: GitRepositoryIdentity,
+    observation: GitCheckObservation,
+  ): Promise<void> {
+    if (this.links === undefined || this.observations === undefined) return;
+    if (binding.provider !== this.provider) return;
+    await this.observations.record(
+      this.scope,
+      {
+        organizationId: this.organizationId,
+        receiverId: this.receiverId,
+        provider: this.provider,
+        repositoryId: binding.repositoryId,
+      },
+      observation,
+    );
+  }
+
   /** Reads and locks the current mapping for the authenticated provider identity. */
   public async findMapping(identity: GitRepositoryIdentity): Promise<GitDeliveryMapping | null> {
     if (identity.provider !== this.provider) return null;

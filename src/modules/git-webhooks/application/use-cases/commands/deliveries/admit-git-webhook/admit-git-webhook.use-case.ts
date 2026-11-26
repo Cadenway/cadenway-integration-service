@@ -1,5 +1,6 @@
 import { readVerifiedGitChecks } from '../../../../../domain/policies/deliveries/read-verified-git-checks.policy.js';
 import { readVerifiedGitDelivery } from '../../../../../domain/policies/deliveries/read-verified-git-delivery.policy.js';
+import type { VerifiedGitChecks } from '../../../../../domain/value-objects/checks/verified-git-checks.value-object.js';
 import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/deliveries/verified-git-delivery.value-object.js';
 import type { GitDeliveryMapping } from '../../../../models/deliveries/git-delivery-mapping.model.js';
 import type { GitRepositoryIdentity } from '../../../../models/deliveries/git-repository-identity.model.js';
@@ -51,12 +52,19 @@ export class AdmitGitWebhook {
       if (mapping === null) {
         return supportedEvent(verifiedInput) ? 'authentication-failed' : 'ignored';
       }
-      const fact = readFact(mapping, body);
+      const { fact, checks } = readFact(mapping, body);
       if (fact.kind === 'repository_mismatch') {
         return supportedEvent(verifiedInput) ? 'authentication-failed' : 'ignored';
       }
-      if (fact.kind === 'actionable' && !matchesEvent(verifiedInput, fact.trigger)) {
+      if (
+        (fact.kind === 'actionable' && !matchesEvent(verifiedInput, fact.trigger)) ||
+        (checks !== null && !matchesEvent(verifiedInput, 'pr_checks'))
+      ) {
         return 'invalid-delivery';
+      }
+      // Observations are kept per repository and head, also before any link exists.
+      if (checks !== null) {
+        await transaction.recordCheckObservation(mapping.binding, checks.observation);
       }
       const work = fact.kind === 'actionable' ? await selectWork(transaction, mapping, fact) : null;
       return transaction.admit({
@@ -77,20 +85,34 @@ export class AdmitGitWebhook {
 
 type Actionable = Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
 
-function readFact(mapping: GitDeliveryMapping, body: unknown): VerifiedGitDelivery {
+/** Reads a link fact, or else a check observation and the one request it names, if any. */
+function readFact(
+  mapping: GitDeliveryMapping,
+  body: unknown,
+): { readonly fact: VerifiedGitDelivery; readonly checks: VerifiedGitChecks | null } {
   const fact = readVerifiedGitDelivery(mapping.binding, body);
-  if (fact.kind !== 'ignored') return fact;
+  if (fact.kind !== 'ignored') return { fact, checks: null };
   const checks = readVerifiedGitChecks(mapping.binding, body);
-  return checks === null
-    ? fact
-    : {
-        kind: 'actionable',
-        trigger: 'pr_checks',
-        requestNumber: checks.requestNumber,
-        checks,
-        taskKeys: [],
-        closingTaskKeys: [],
-      };
+  const request = checks?.request;
+  if (checks === null || request === undefined) return { fact, checks };
+  const { observation } = checks;
+  return {
+    checks,
+    fact: {
+      kind: 'actionable',
+      trigger: 'pr_checks',
+      requestNumber: request.number,
+      checks: {
+        requestNumber: request.number,
+        headSha: observation.headSha,
+        attemptId: observation.attemptId,
+        completedAtMs: observation.observedAtMs,
+      },
+      ...(request.state === undefined ? {} : { requestState: request.state }),
+      taskKeys: [],
+      closingTaskKeys: [],
+    },
+  };
 }
 
 async function selectWork(
@@ -110,7 +132,9 @@ async function selectWork(
   const pending = await transaction.findPendingRequestWork(
     mapping,
     fact.requestNumber,
-    fact.trigger === 'pr_checks' ? ['pr_open', 'pr_merged', 'pr_head'] : ['pr_open', 'pr_merged'],
+    fact.trigger === 'pr_checks'
+      ? ['pr_open', 'pr_merged', 'pr_head', 'pr_updated']
+      : ['pr_open', 'pr_merged'],
   );
   if (pending === null && fact.trigger !== 'pr_merged') return null;
   const predecessors = pending ?? [];

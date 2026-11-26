@@ -14,7 +14,7 @@ GitHub and GitLab.
 
 **API**: Connections, repositories, accounts, a task's links (link, unlink, create a branch), Git automations, redeliver a webhook, test event.
 
-**Events emitted**: `git.branch-created`, `git.pr-opened`, `git.pr-merged`, `git.pr-closed`, `git.checks-completed`.
+**Events emitted**: `git.branch-created`, `git.pr-opened`, `git.pr-merged`, `git.pr-closed`, `git.pr-reopened`, `git.checks-completed`, `git.link-updated`.
 
 **Events consumed**: `task.purged` (removes links).
 

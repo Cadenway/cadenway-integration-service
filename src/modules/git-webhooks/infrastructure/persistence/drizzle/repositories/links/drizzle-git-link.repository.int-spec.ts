@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { gitLinkIdentity } from '../../../../../domain/policies/links/git-link-change.policy.js';
 import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/deliveries/verified-git-delivery.value-object.js';
+import type { GitCheckObservation } from '../../../../../domain/value-objects/checks/git-check-observation.value-object.js';
+import { DrizzleGitCheckObservationRepository } from '../checks/drizzle-git-check-observation.repository.js';
 import { DrizzleGitLinkRepository } from './drizzle-git-link.repository.js';
 
 const composeFile = fileURLToPath(
@@ -47,6 +49,7 @@ describe('Git link persistence', () => {
   let pool: pg.Pool | undefined;
   let runner: TenantTransactionRunner;
   const links = new DrizzleGitLinkRepository();
+  const observations = new DrizzleGitCheckObservationRepository();
 
   beforeAll(async () => {
     compose('up', '--detach', '--wait', '--wait-timeout', '120', 'postgres');
@@ -106,15 +109,22 @@ describe('Git link persistence', () => {
       );
 
     const first = await Promise.all([record(request), record(request)]);
-    const created = first.find((result) => result !== null);
-    expect(first.filter((result) => result !== null)).toHaveLength(1);
-    expect(created?.event).toEqual({ type: 'pull-request-opened', version: 1 });
+    const created = first.find((result) => result?.events.length === 1);
+    expect(first.flatMap((result) => result?.events ?? [])).toEqual([
+      { type: 'pull-request-opened', version: 1 },
+    ]);
+    expect(new Set(first.map((result) => result?.id)).size).toBe(1);
     const merged = await record({ ...request, trigger: 'pr_merged' });
     expect(merged).toEqual({
       id: created?.id,
-      event: { type: 'pull-request-merged', version: 2 },
+      events: [{ type: 'pull-request-merged', version: 2 }],
+      reconciliation: 'unchanged',
     });
-    expect(await record(request)).toBeNull();
+    expect(await record(request)).toEqual({
+      id: created?.id,
+      events: [],
+      reconciliation: 'unchanged',
+    });
   });
 
   it('rolls back a link with its transaction and isolates tenants', async () => {
@@ -137,7 +147,7 @@ describe('Git link persistence', () => {
     const created = await runWithOrganizationContext(context, () =>
       runner.run((scope) => links.record(scope, identity, fact, 'CAD-482')),
     );
-    expect(created?.event).toEqual({ type: 'branch-created', version: 1 });
+    expect(created?.events).toEqual([{ type: 'branch-created', version: 1 }]);
     const otherContext = {
       organizationId: otherOrganizationId,
       actor: { type: 'user' as const, id: actor },
@@ -177,10 +187,9 @@ describe('Git link persistence', () => {
       runner.run(async (scope) => {
         expect(await links.record(scope, identity, fact, 'CAD-482')).toBeNull();
         const explicit = { ...fact, referencedTaskKeys: ['CAD-482'] };
-        expect((await links.record(scope, identity, explicit, 'CAD-482'))?.event).toEqual({
-          type: 'pull-request-merged',
-          version: 1,
-        });
+        expect((await links.record(scope, identity, explicit, 'CAD-482'))?.events).toEqual([
+          { type: 'pull-request-merged', version: 1 },
+        ]);
       }),
     );
   });
@@ -221,7 +230,7 @@ describe('Git link persistence', () => {
     expect(rows.rows).toEqual([]);
   });
 
-  it('correlates checks to the currently authorized request head and rejects stale retries', async () => {
+  it('projects checks stored before the link and before its head update, and rejects stale retries', async () => {
     const context = {
       organizationId,
       actor: { type: 'user' as const, id: actor },
@@ -237,6 +246,30 @@ describe('Git link persistence', () => {
       head: { sha: shaA, observedAtMs: 100 },
     } as const;
     const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, opened);
+    const repository = {
+      organizationId,
+      receiverId,
+      provider: 'github' as const,
+      repositoryId: 81,
+    };
+    const observe = (observation: GitCheckObservation) =>
+      runWithOrganizationContext(context, () =>
+        runner.run((scope) => observations.record(scope, repository, observation)),
+      );
+    const suite = (
+      headSha: string,
+      attemptId: number,
+      at: number,
+      conclusion: string | null,
+    ): GitCheckObservation => ({
+      provider: 'github',
+      attemptId,
+      headSha,
+      observedAtMs: at,
+      completedAtMs: conclusion === null ? null : at,
+      status: conclusion === null ? 'queued' : 'completed',
+      conclusion,
+    });
     const lookup = (headSha?: string, overrides = {}) =>
       runWithOrganizationContext(context, () =>
         runner.run((scope) =>
@@ -251,56 +284,122 @@ describe('Git link persistence', () => {
       runWithOrganizationContext(context, () =>
         runner.run((scope) => links.record(scope, identity, fact, 'CAD-485')),
       );
-    const checks = {
-      kind: 'actionable',
-      trigger: 'pr_checks',
-      requestNumber: 215,
-      taskKeys: ['CAD-485'],
-      closingTaskKeys: [],
-      checks: { requestNumber: 215, headSha: shaA, attemptId: 10, completedAtMs: 120 },
-    } as const satisfies VerifiedGitDelivery;
+    const checks = (headSha: string) =>
+      ({
+        kind: 'actionable',
+        trigger: 'pr_checks',
+        requestNumber: 215,
+        taskKeys: ['CAD-485'],
+        closingTaskKeys: [],
+        checks: { requestNumber: 215, headSha, attemptId: 10, completedAtMs: 120 },
+      }) as const satisfies VerifiedGitDelivery;
 
+    // A running suite arrives before the opening delivery creates the link.
+    expect(await observe(suite(shaA, 10, 90, null))).toBe('recorded');
     expect(await record(opened)).toMatchObject({
-      event: { type: 'pull-request-opened', version: 1 },
+      events: [
+        { type: 'pull-request-opened', version: 1 },
+        { type: 'link-updated', version: 2, changed: ['checks'] },
+      ],
     });
     expect(await lookup(shaA)).toEqual(['CAD-485']);
     expect(await lookup(shaB)).toEqual([]);
     expect(await lookup(undefined, { binding: { ...binding, installationId: 42 } })).toEqual([]);
     await expect(
-      record({ ...checks, checks: { ...checks.checks, requestNumber: 216 } }),
+      record({ ...checks(shaA), checks: { ...checks(shaA).checks, requestNumber: 216 } }),
     ).rejects.toThrow('verified checks do not match');
+
+    expect(await observe(suite(shaA, 10, 120, 'success'))).toBe('recorded');
+    expect(await observe(suite(shaA, 10, 110, null))).toBe('ignored');
     await expect(
       runWithOrganizationContext(context, () =>
         runner.run(async (scope) => {
-          await links.record(scope, identity, checks, 'CAD-485');
+          await links.record(scope, identity, checks(shaA), 'CAD-485');
           throw new Error('roll back check and outbox');
         }),
       ),
     ).rejects.toThrow('roll back check and outbox');
-    expect(await record(checks)).toMatchObject({ event: { type: 'checks-completed', version: 2 } });
-    expect(await record(checks)).toBeNull();
-    expect(
-      await record({ ...checks, checks: { ...checks.checks, completedAtMs: 130 } }),
-    ).toMatchObject({
-      event: { type: 'checks-completed', version: 3 },
+    expect(await record(checks(shaA))).toMatchObject({
+      events: [{ type: 'checks-completed', version: 3 }],
     });
+    expect(await record(checks(shaA))).toMatchObject({ events: [] });
+
+    // The suite of the next head is stored before GitHub reports the head change.
+    await observe(suite(shaB, 11, 350, 'failure'));
     const head = { ...opened, trigger: 'pr_head' as const };
-    expect(await record({ ...head, head: { sha: shaA, observedAtMs: 300 } })).toBeNull();
-    expect(await record({ ...head, head: { sha: shaB, observedAtMs: 200 } })).toBeNull();
+    expect(await record({ ...head, head: { sha: shaA, observedAtMs: 300 } })).toMatchObject({
+      events: [],
+    });
+    expect(await record({ ...head, head: { sha: shaB, observedAtMs: 200 } })).toMatchObject({
+      events: [],
+    });
     expect(await lookup(shaA)).toEqual(['CAD-485']);
-    expect(await record({ ...head, head: { sha: shaB, observedAtMs: 400 } })).toBeNull();
-    expect(await record(checks)).toBeNull();
-    expect(
-      await record({ ...checks, checks: { ...checks.checks, headSha: shaB, completedAtMs: 399 } }),
-    ).toBeNull();
-    expect(
-      await record({ ...checks, checks: { ...checks.checks, headSha: shaB, completedAtMs: 400 } }),
-    ).toMatchObject({ event: { type: 'checks-completed', version: 4 } });
+    expect(await record({ ...head, head: { sha: shaB, observedAtMs: 400 } })).toMatchObject({
+      events: [
+        { type: 'link-updated', version: 4, changed: ['headSha', 'checks', 'checksCompletedAt'] },
+      ],
+    });
+    expect(await lookup(shaB)).toEqual(['CAD-485']);
+    expect(await record(checks(shaA))).toMatchObject({ events: [] });
     await runWithOrganizationContext(context, () =>
       runner.run((scope) => links.purge(scope, organizationId, 'CAD-485')),
     );
     expect(await lookup()).toEqual([]);
-    expect(await record(checks)).toBeNull();
+    expect(await record(checks(shaB))).toBeNull();
+  });
+
+  it('stores lifecycle watermarks and the reconciliation mark of an equal-time tie', async () => {
+    const context = {
+      organizationId,
+      actor: { type: 'user' as const, id: actor },
+      role: null,
+      scopes: [],
+    };
+    const T = Date.UTC(2026, 10, 8, 10, 41);
+    const at = (state: 'open' | 'closed', observedAtMs: number) => ({
+      state: { state, observedAtMs },
+      members: { title: `CAD-486 ${state}` },
+    });
+    const opened = {
+      ...request,
+      requestNumber: 217,
+      taskKeys: ['CAD-486'],
+      request: at('open', T - 1_000),
+    } as const;
+    const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, opened);
+    const record = (fact: Extract<VerifiedGitDelivery, { kind: 'actionable' }>) =>
+      runWithOrganizationContext(context, () =>
+        runner.run((scope) => links.record(scope, identity, fact, 'CAD-486')),
+      );
+    const marked = () =>
+      runWithOrganizationContext(context, () =>
+        runner.run(async (scope) => {
+          const rows = await scope.client.query(
+            `select reconciliation_pending_since is not null as pending, title
+               from git_links where organization_id = $1 and task_key = 'CAD-486'`,
+            [organizationId],
+          );
+          return rows.rows[0] as { readonly pending: boolean; readonly title: string } | undefined;
+        }),
+      );
+    await record(opened);
+    expect(
+      await record({ ...opened, trigger: 'pr_closed', request: at('closed', T) }),
+    ).toMatchObject({
+      events: [{ type: 'pull-request-closed', version: 2 }],
+      reconciliation: 'unchanged',
+    });
+    expect(
+      await record({ ...opened, trigger: 'pr_reopened', request: at('open', T) }),
+    ).toMatchObject({
+      events: [{ type: 'pull-request-reopened', version: 3 }],
+      reconciliation: 'marked',
+    });
+    expect(await marked()).toEqual({ pending: true, title: 'CAD-486 open' });
+    expect(
+      await record({ ...opened, trigger: 'pr_updated', request: at('open', T + 1_000) }),
+    ).toMatchObject({ events: [], reconciliation: 'cleared' });
+    expect(await marked()).toEqual({ pending: false, title: 'CAD-486 open' });
   });
 
   it('does not return a truncated request audience over the bounded admission limit', async () => {

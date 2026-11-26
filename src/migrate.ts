@@ -13,6 +13,8 @@ import type { MigrationConfig } from './config/app-config.js';
 import {
   GIT_DISPATCH_QUEUE,
   GIT_LINK_DISPATCH_QUEUE,
+  GIT_LINK_MAINTENANCE_QUEUE,
+  GIT_MERGE_INTENT_QUEUE,
   GIT_PURGE_QUEUE,
 } from './config/job-queues.js';
 
@@ -61,6 +63,12 @@ if (!existsSync(`${migrationsFolder}/meta/_journal.json`)) {
   await provisionJobs({
     connection: { connectionString: migration.MIGRATION_DATABASE_URL },
     appRole: 'integration_app',
-    queues: [GIT_DISPATCH_QUEUE, GIT_LINK_DISPATCH_QUEUE, GIT_PURGE_QUEUE],
+    queues: [
+      GIT_DISPATCH_QUEUE,
+      GIT_LINK_DISPATCH_QUEUE,
+      GIT_PURGE_QUEUE,
+      GIT_MERGE_INTENT_QUEUE,
+      GIT_LINK_MAINTENANCE_QUEUE,
+    ],
   });
 }

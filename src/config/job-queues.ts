@@ -28,3 +28,25 @@ export const GIT_PURGE_QUEUE = {
   retryDelayMaxSeconds: 120,
   expireInSeconds: 30,
 } as const satisfies JobQueueDeclaration;
+
+/**
+ * Submits a pending merge intent. The use case schedules each retry itself, with backoff inside
+ * Task's receipt window; the queue retries only an attempt that failed before it could settle.
+ */
+export const GIT_MERGE_INTENT_QUEUE = {
+  name: 'integration.submit-git-merge-intent',
+  retryLimit: 5,
+  retryDelaySeconds: 30,
+  retryDelayMaxSeconds: 600,
+  expireInSeconds: 30,
+  retentionSeconds: 48 * 60 * 60,
+} as const satisfies JobQueueDeclaration;
+
+/** Hourly pruning of old check observations and report of links and intents to follow up. */
+export const GIT_LINK_MAINTENANCE_QUEUE = {
+  name: 'integration.git-link-maintenance',
+  retryLimit: 2,
+  retryDelaySeconds: 60,
+  expireInSeconds: 120,
+  retentionSeconds: 60 * 60,
+} as const satisfies JobQueueDeclaration;

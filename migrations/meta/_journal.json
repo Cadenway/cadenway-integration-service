@@ -57,6 +57,13 @@
       "when": 1795423799306,
       "tag": "0007_outbox_leases",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795689715620,
+      "tag": "0008_git_link_projection",
+      "breakpoints": true
     }
   ]
 }

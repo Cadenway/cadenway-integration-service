@@ -1,0 +1,308 @@
+import { InvalidGitLinkError } from '../../errors/links/invalid-git-link.error.js';
+import type { GitLinkChanged } from '../../events/links/git-link-changed.event.js';
+import type { GitCheckObservation } from '../../value-objects/checks/git-check-observation.value-object.js';
+import type { GitLinkDecision } from '../../value-objects/links/git-link-decision.value-object.js';
+import type { GitLinkDelivery } from '../../value-objects/links/git-link-delivery.value-object.js';
+import type { GitLinkMemberName } from '../../value-objects/links/git-link-member-name.value-object.js';
+import type { GitLinkMembers } from '../../value-objects/links/git-link-members.value-object.js';
+import type { GitLinkProjection } from '../../value-objects/links/git-link-projection.value-object.js';
+import { aggregateGitChecks } from '../checks/aggregate-git-checks.policy.js';
+
+type Status = GitLinkProjection['status'];
+type Lifecycle = 'unchanged' | 'applied' | 'tie';
+
+const lifecycleFacts = {
+  open: 'pull-request-reopened',
+  closed: 'pull-request-closed',
+  merged: 'pull-request-merged',
+} as const;
+
+/**
+ * Applies one verified delivery to one link under "Ordering", "Checks" and "Reconciliation" of
+ * the Integration AsyncAPI, for the Development panel (App.dc.html:4328–4360).
+ *
+ * - The lifecycle and every other member keep their own provider-time watermark. An older
+ *   delivery is ignored for that member; an equal one is applied in arrival order.
+ * - `merged` is final: a verified merge supersedes `closed` whatever its time, and nothing
+ *   leaves `merged`. A delivery that reports another state realigns the lifecycle when it is
+ *   not older than the last one applied. An equal-time delivery whose lifecycle differs marks
+ *   the link for reconciliation, even when `merged` ignores it; a strictly newer delivery that
+ *   carries the state clears the mark.
+ * - Checks are the aggregate of `observationsOf(headSha)` for the current head, recomputed on
+ *   creation, on a head change and on a check observation of that head.
+ * - Every committed change takes the next version and one fact: the lifecycle fact, the check
+ *   completion, or `link-updated` naming the other changed members. A creation that finds
+ *   stored observations adds a `link-updated` naming `checks` after its opening fact.
+ *
+ * Returns null when the delivery cannot create a missing link.
+ */
+export function decideGitLinkUpdate(
+  current: GitLinkProjection | null,
+  delivery: GitLinkDelivery,
+  observationsOf: (headSha: string) => readonly GitCheckObservation[],
+): GitLinkDecision | null {
+  if (current === null) return delivery.creates ? create(delivery, observationsOf) : null;
+  if ((current.status === 'created') !== (delivery.kind === 'branch')) {
+    throw new InvalidGitLinkError();
+  }
+  assertVersion(current.version);
+
+  const lifecycle = delivery.kind === 'branch' ? null : applyLifecycle(current, delivery);
+  const members = applyMembers(current, delivery);
+  const head = applyHead(current, delivery);
+  const headChanged = head.sha !== current.head?.sha;
+  const recompute = head.sha !== undefined && (headChanged || delivery.checksHeadSha === head.sha);
+  const aggregate = recompute
+    ? aggregateGitChecks(observationsOf(head.sha))
+    : { checks: current.checks, completedAtMs: current.checksCompletedAtMs };
+  const checksChanged = !same(aggregate.checks, current.checks);
+  const completedChanged = aggregate.completedAtMs !== current.checksCompletedAtMs;
+
+  const changes: GitLinkChanged[] = [];
+  let version = current.version;
+  const next = (): number => {
+    version += 1;
+    assertVersion(version);
+    return version;
+  };
+  const status = lifecycle?.status ?? current.status;
+  if (status !== current.status) {
+    changes.push({ type: lifecycleFacts[status as keyof typeof lifecycleFacts], version: next() });
+  }
+
+  const memberNames: string[] = [...members.changed];
+  if (headChanged) memberNames.push('headSha');
+  const checkNames: string[] = [];
+  if (checksChanged) checkNames.push('checks');
+  if (completedChanged) checkNames.push('checksCompletedAt');
+  const entersOutcome =
+    delivery.checksHeadSha !== null &&
+    !headChanged &&
+    aggregate.checks !== null &&
+    aggregate.checks.state !== 'running' &&
+    aggregate.checks.state !== current.checks?.state;
+  if (entersOutcome) {
+    changes.push({ type: 'checks-completed', version: next() });
+  } else if (changes.length === 0 && memberNames.length + checkNames.length !== 0) {
+    changes.push({
+      type: 'link-updated',
+      version: next(),
+      changed: [...memberNames, ...checkNames],
+    });
+  } else if (checkNames.length !== 0) {
+    // A lifecycle fact covers the other members of its delivery, not the aggregate.
+    const changed = headChanged ? ['headSha', ...checkNames] : checkNames;
+    changes.push({ type: 'link-updated', version: next(), changed });
+  }
+
+  const tie = lifecycle?.result === 'tie';
+  const cleared = lifecycle?.clears === true && !tie;
+  const reconciliationPending = tie || (current.reconciliationPending && !cleared);
+  return {
+    projection: {
+      status,
+      version,
+      lifecycleObservedAtMs: lifecycle?.observedAtMs ?? current.lifecycleObservedAtMs,
+      members: members.values,
+      memberObservedAtMs: members.observedAtMs,
+      linkSource: current.linkSource,
+      head: head.value,
+      checks: aggregate.checks,
+      checksCompletedAtMs: aggregate.completedAtMs,
+      reconciliationPending,
+    },
+    events: changes,
+    reconciliation:
+      reconciliationPending === current.reconciliationPending
+        ? 'unchanged'
+        : reconciliationPending
+          ? 'marked'
+          : 'cleared',
+  };
+}
+
+function create(
+  delivery: GitLinkDelivery,
+  observationsOf: (headSha: string) => readonly GitCheckObservation[],
+): GitLinkDecision {
+  const state = delivery.lifecycle?.state;
+  if (delivery.kind === 'pull-request' && state !== 'open' && state !== 'merged') {
+    throw new InvalidGitLinkError();
+  }
+  const status: Status = delivery.kind === 'branch' ? 'created' : (state ?? 'open');
+  const head =
+    delivery.kind === 'branch' || delivery.head === null
+      ? null
+      : {
+          sha: delivery.head.sha,
+          firstObservedAtMs: delivery.head.observedAtMs,
+          lastObservedAtMs: delivery.head.observedAtMs,
+        };
+  const memberObservedAtMs: Partial<Record<GitLinkMemberName, number>> = {};
+  if (delivery.membersObservedAtMs !== null) {
+    for (const name of Object.keys(delivery.members) as GitLinkMemberName[]) {
+      memberObservedAtMs[name] = delivery.membersObservedAtMs;
+    }
+  }
+  const aggregate =
+    head === null
+      ? { checks: null, completedAtMs: null }
+      : aggregateGitChecks(observationsOf(head.sha));
+  const events: GitLinkChanged[] = [
+    {
+      type:
+        status === 'created'
+          ? 'branch-created'
+          : status === 'merged'
+            ? 'pull-request-merged'
+            : 'pull-request-opened',
+      version: 1,
+    },
+  ];
+  const checkNames: string[] = [];
+  if (aggregate.checks !== null) checkNames.push('checks');
+  if (aggregate.completedAtMs !== null) checkNames.push('checksCompletedAt');
+  if (checkNames.length !== 0)
+    events.push({ type: 'link-updated', version: 2, changed: checkNames });
+  return {
+    projection: {
+      status,
+      version: events.length,
+      lifecycleObservedAtMs:
+        delivery.kind === 'branch' ? null : (delivery.lifecycle?.observedAtMs ?? null),
+      members: delivery.members,
+      memberObservedAtMs,
+      linkSource: delivery.linkSource,
+      head,
+      checks: aggregate.checks,
+      checksCompletedAtMs: aggregate.completedAtMs,
+      reconciliationPending: false,
+    },
+    events,
+    reconciliation: 'unchanged',
+  };
+}
+
+/** Orders the lifecycle on its own watermark. A merge is final and supersedes a closure. */
+function applyLifecycle(
+  current: GitLinkProjection,
+  delivery: GitLinkDelivery,
+): {
+  readonly status: Status;
+  readonly observedAtMs: number | null;
+  readonly result: Lifecycle;
+  readonly clears: boolean;
+} | null {
+  const reported = delivery.lifecycle;
+  if (reported === null) return null;
+  const watermark = current.lifecycleObservedAtMs;
+  const at = reported.observedAtMs;
+  const differs = reported.state !== current.status;
+  const newer = at !== null && (watermark === null || at > watermark);
+  const equal = at !== null && watermark !== null && at === watermark;
+  const observedAtMs = at === null ? watermark : watermark === null ? at : Math.max(watermark, at);
+
+  if (current.status === 'merged') {
+    return {
+      status: 'merged',
+      observedAtMs,
+      result: equal && differs ? 'tie' : 'unchanged',
+      clears: newer,
+    };
+  }
+  if (reported.state === 'merged') {
+    return { status: 'merged', observedAtMs, result: equal ? 'tie' : 'applied', clears: newer };
+  }
+  if (at === null) {
+    // Without a provider time a delivery can only fill a lifecycle that was never ordered.
+    return watermark === null && differs
+      ? { status: reported.state, observedAtMs, result: 'applied', clears: false }
+      : { status: current.status, observedAtMs, result: 'unchanged', clears: false };
+  }
+  if (newer) {
+    return {
+      status: reported.state,
+      observedAtMs,
+      result: differs ? 'applied' : 'unchanged',
+      clears: true,
+    };
+  }
+  if (equal && differs) {
+    return { status: reported.state, observedAtMs, result: 'tie', clears: false };
+  }
+  return { status: current.status, observedAtMs, result: 'unchanged', clears: false };
+}
+
+/** Applies each carried member on its own watermark, in arrival order for an equal time. */
+function applyMembers(
+  current: GitLinkProjection,
+  delivery: GitLinkDelivery,
+): {
+  readonly values: GitLinkMembers;
+  readonly observedAtMs: Readonly<Partial<Record<GitLinkMemberName, number>>>;
+  readonly changed: readonly GitLinkMemberName[];
+} {
+  const values: Record<string, unknown> = { ...current.members };
+  const observedAtMs: Partial<Record<GitLinkMemberName, number>> = {
+    ...current.memberObservedAtMs,
+  };
+  const changed: GitLinkMemberName[] = [];
+  const at = delivery.membersObservedAtMs;
+  for (const [name, value] of Object.entries(delivery.members) as [GitLinkMemberName, unknown][]) {
+    const watermark = observedAtMs[name];
+    const recorded = values[name];
+    const applies =
+      at === null ? recorded === undefined : watermark === undefined || at >= watermark;
+    if (!applies) continue;
+    if (at !== null) observedAtMs[name] = at;
+    if (!same(value, recorded)) {
+      values[name] = value;
+      changed.push(name);
+    }
+  }
+  return { values, observedAtMs, changed };
+}
+
+/** Applies a head observed at or after the last one, in arrival order for an equal time. */
+function applyHead(
+  current: GitLinkProjection,
+  delivery: GitLinkDelivery,
+): { readonly value: GitLinkProjection['head']; readonly sha: string | undefined } {
+  const observed = delivery.head;
+  const recorded = current.head;
+  if (
+    delivery.kind === 'branch' ||
+    observed === null ||
+    (recorded !== null && observed.observedAtMs < recorded.lastObservedAtMs)
+  ) {
+    return { value: recorded, sha: recorded?.sha };
+  }
+  if (recorded !== null && recorded.sha === observed.sha) {
+    const value = { ...recorded, lastObservedAtMs: observed.observedAtMs };
+    return { value, sha: value.sha };
+  }
+  const value = {
+    sha: observed.sha,
+    firstObservedAtMs: observed.observedAtMs,
+    lastObservedAtMs: observed.observedAtMs,
+  };
+  return { value, sha: value.sha };
+}
+
+function assertVersion(version: number): void {
+  if (!Number.isSafeInteger(version) || version < 1) throw new InvalidGitLinkError();
+}
+
+/** Compares member values regardless of the key order a JSON store gives back. */
+function same(first: unknown, second: unknown): boolean {
+  return canonical(first) === canonical(second);
+}
+
+function canonical(value: unknown): string {
+  if (value === undefined || value === null) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, member]) => member !== undefined)
+    .sort(([first], [second]) => (first < second ? -1 : first > second ? 1 : 0));
+  return `{${entries.map(([key, member]) => `${JSON.stringify(key)}:${canonical(member)}`).join(',')}}`;
+}

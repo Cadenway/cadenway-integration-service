@@ -24,6 +24,8 @@ import type { AppConfig } from './config/app-config.js';
 import {
   GIT_DISPATCH_QUEUE,
   GIT_LINK_DISPATCH_QUEUE,
+  GIT_LINK_MAINTENANCE_QUEUE,
+  GIT_MERGE_INTENT_QUEUE,
   GIT_PURGE_QUEUE,
 } from './config/job-queues.js';
 import { GitWebhooksModule } from './modules/git-webhooks/git-webhooks.module.js';
@@ -98,7 +100,13 @@ import { PlatformModule } from './modules/platform/platform.module.js';
       inject: [CONFIG],
       useFactory: (config: AppConfig) => ({
         connection: { connectionString: config.DATABASE_URL },
-        queues: [GIT_DISPATCH_QUEUE, GIT_LINK_DISPATCH_QUEUE, GIT_PURGE_QUEUE],
+        queues: [
+          GIT_DISPATCH_QUEUE,
+          GIT_LINK_DISPATCH_QUEUE,
+          GIT_PURGE_QUEUE,
+          GIT_MERGE_INTENT_QUEUE,
+          GIT_LINK_MAINTENANCE_QUEUE,
+        ],
         capabilities: ['producer', 'worker', 'scheduler'],
         poolSize: 2,
         shutdownTimeoutMs: 8_000,

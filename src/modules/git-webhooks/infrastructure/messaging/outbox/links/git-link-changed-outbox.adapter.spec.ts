@@ -1,9 +1,11 @@
 import {
   GIT_BRANCH_CREATED_V1,
   GIT_CHECKS_COMPLETED_V1,
+  GIT_LINK_UPDATED_V1,
   GIT_PR_CLOSED_V1,
   GIT_PR_MERGED_V1,
   GIT_PR_OPENED_V1,
+  GIT_PR_REOPENED_V1,
   eventSchemas,
 } from '@cadenway/contracts/events/integration-service';
 import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/database';
@@ -45,6 +47,7 @@ describe('GitLinkChangedOutbox', () => {
     ['pull-request-merged', GIT_PR_MERGED_V1, 'state', 2],
     ['pull-request-closed', GIT_PR_CLOSED_V1, 'state', 2],
     ['checks-completed', GIT_CHECKS_COMPLETED_V1, 'checks', 3],
+    ['pull-request-reopened', GIT_PR_REOPENED_V1, 'state', 3],
   ] as const)(
     'appends the published %s fact with only its authorized placement',
     async (type, name, changed, version) => {
@@ -77,6 +80,32 @@ describe('GitLinkChangedOutbox', () => {
       });
     },
   );
+
+  it('appends one link update naming every changed member of the delivery', async () => {
+    const { append, adapter, scope } = setup();
+    await adapter.append(scope, {
+      ...target,
+      event: { type: 'link-updated', version: 4, changed: ['draft', 'reviewRequested'] },
+    });
+    const [, , usedName, data] = append.mock.calls[0] ?? [];
+    expect(usedName).toBe(GIT_LINK_UPDATED_V1);
+    expect(eventSchemas[GIT_LINK_UPDATED_V1].parse({ ...data, ...envelope })).toMatchObject({
+      version: 4,
+      gitLinkId: target.gitLinkId,
+      changed: ['draft', 'reviewRequested'],
+    });
+  });
+
+  it('refuses a link update that names no member', async () => {
+    const { append, adapter, scope } = setup();
+    await expect(
+      adapter.append(scope, {
+        ...target,
+        event: { type: 'link-updated', version: 2, changed: [] },
+      }),
+    ).rejects.toThrow('names no member');
+    expect(append).not.toHaveBeenCalled();
+  });
 
   it('refuses another tenant and the system transaction before appending', async () => {
     const { append, adapter, scope } = setup();

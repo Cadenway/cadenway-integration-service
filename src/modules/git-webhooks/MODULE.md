@@ -3,7 +3,8 @@
 ## Purpose
 
 Authenticates original GitHub and GitLab webhook bytes, admits bounded work for the registered
-repository and dispatches each referenced task through Task's internal Git command.
+repository, dispatches each referenced task through Task's internal Git command, projects the
+task Git links of the Development panel and serves their read to the API gateway.
 
 ## Public entry points
 
@@ -22,17 +23,29 @@ binding. See the [operator commands](../../../docs/development.md#git-binding-op
 - `git_webhook_deliveries` and `git_webhook_delivery_ids` store receipt digests and provider aliases.
 - `git_dispatch_claims` reserves one stable Task command key per admitted target and records its
   terminal disposition. The jobs runtime owns the queue tables.
-- `git_links` stores versioned changes per verified provider reference and authorized task.
+- `git_links` stores the versioned `GitLink` projection per verified provider reference and
+  authorized task, with a provider-time watermark for the lifecycle and for each other member, and
+  the internal `reconciliation pending` mark.
+- `git_check_observations` stores the latest state of each check suite or merge request pipeline
+  per organization, receiver repository and head SHA, independent of links.
+- `git_merge_intents` stores the single merge intent of a link, `pending` or `handled`, with the
+  creating delivery, its Task command key, attempts and the Task disposition or refusal reason.
 - `git_purged_tasks` stores the terminal task key fence used by replay and cleanup.
 
 ## API
 
 - `POST /internal/v1/webhooks/github?bindingId=<uuid>`
 - `POST /internal/v1/webhooks/gitlab?bindingId=<uuid>`
+- `GET /internal/v1/tasks/{taskKey}/git-links` (`listTaskGitLinksInternal`)
 
 Both routes return a private 204 after admission commits and use a uniform provider authentication
 refusal. An empty receiver configuration keeps inbound Git dispatch disabled. Each configured
 receiver has a deployment-supplied signing credential and a matching enabled database registration.
+
+The link read accepts only a `user` actor of `api-gateway` with an organization; the gateway asks
+Task for read access first. It is bounded by that organization and the task key, pages newest
+first by `(createdAt, id)` with a cursor bound to both, and answers `integration.unavailable` when
+the links cannot be read.
 
 ## Events emitted
 
@@ -40,10 +53,14 @@ receiver has a deployment-supplied signing credential and a matching enabled dat
 - `git.pr-opened.v1`
 - `git.pr-merged.v1`
 - `git.pr-closed.v1`
+- `git.pr-reopened.v1`
 - `git.checks-completed.v1`
+- `git.link-updated.v1`
 
 Each fact carries the canonical task key, authorized placement and stable link ID and version. The
-provider content stays in Integration.
+provider content stays in Integration. Every committed projection change takes the next link
+version and one fact; a creation that finds stored check observations publishes its opening fact,
+then `git.link-updated.v1` naming `checks`.
 
 ## Events consumed
 
@@ -71,18 +88,37 @@ terminal task purges.
 - Each provider's signature is compared against the computed digest in constant time. GitLab
   signature lists may contain multiple versions or signatures for key rotation. Only a matching
   `v1` signature for the configured `whsec_` key authenticates the payload.
-- Up to 20 distinct task references are read from one delivery. Branch creation proposes `progress`,
-  opening a pull request proposes `review`, and a merged pull request proposes `done` for keys with
-  a closing verb in the signed merge delivery. The merge also settles authorized existing links
-  for the same request, including links whose task references were removed or exceeded the limit.
-  An inferred task can only update an existing link. A signed closure, current request-head
-  observation or completed check can only use an existing link for the same receiver,
-  verified provider binding and request number. A check must match the current observed
-  head and advance its check watermark. Conflicting heads at the same provider timestamp are ignored
-  because their delivery order cannot establish which one is current. These deliveries do not change
-  Task status.
-  Task owns current
+- Up to 20 distinct task references are read from one delivery. Branch creation proposes `progress`
+  and opening a pull request proposes `review`. A merged pull request proposes `done` for keys with
+  a closing verb in the signed merge delivery, through the link's merge intent. The merge also
+  settles authorized existing links for the same request, including links whose task references
+  were removed or exceeded the limit. An inferred task can only update an existing link. A closure,
+  reopen, member update (GitHub `edited`, `ready_for_review`, `converted_to_draft`,
+  `review_requested`, `review_request_removed`, `synchronize`; GitLab `update`), head
+  observation or check can only use an existing link for the same receiver, verified provider
+  binding and request number. These deliveries do not change Task status. Task owns current
   visibility, the mapping author's authority, status progression and activity.
+- The lifecycle and every other projected member keep their own provider-time watermark: an older
+  delivery is ignored for that member, an equal one is applied in arrival order. `merged` is final
+  and a verified merge supersedes `closed`. A delivery that reports the request's state realigns
+  the lifecycle when it is not older; an equal-time delivery whose lifecycle differs marks the link
+  `reconciliation pending`, and a strictly newer one carrying the state clears it. There is no
+  provider client before gap B5: the hourly maintenance reports each marked link.
+- Check observations are stored at admission per repository, head SHA and suite or pipeline, under
+  their own provider-time watermark, whether or not a link exists. The aggregate of the current head
+  leaves out `stale` GitHub suites, uses the GitLab pipeline with the highest ID and is absent with
+  no eligible observation. It is recomputed on creation, on a head change and on a check of the
+  current head. An observation whose head is no link's current head is pruned 7 days after its last
+  update by the hourly `integration.git-link-maintenance` job.
+- The first verified merge delivery of a link records its merge intent in the dispatch settlement
+  transaction, under the link lock, whatever the lifecycle shows. Its command key is the dispatch
+  claim ID; the merge dispatch authorizes the link under that key with a `:link` suffix and no
+  status. A later merge delivery finds the intent and submits nothing. The
+  `integration.submit-git-merge-intent` job submits `done`, retries a failure or ambiguous answer
+  with backoff from one minute to one hour under the same key, and stops resending once the next
+  attempt would fall outside 24 hours of the intent: the intent then stays `pending` and the
+  maintenance reports it once. Task's `applied` or `no_op` marks it `handled`; `task.not-found`,
+  `task.trashed`, a reused key or an invalid request marks it `handled` with that reason.
 - The worker uses the same Task command ID across transport attempts. It sends no action after the
   one-hour command window. Exhausted attempts go to a dead-letter queue with fixed diagnostics.
 
@@ -113,7 +149,10 @@ terminal task purges.
 - Dispatch reserves its Task command ID in a short tenant transaction, performs HTTP outside the
   transaction and revalidates the receiver and mapping when recording Task's authorized placement.
 - A replayed Task receipt obtains current signed placement through a fresh no-op command. The
-  dispatch settlement, changed link and corresponding fact commit together.
+  dispatch settlement, changed link, its facts, a new merge intent and its first job commit
+  together.
+- A merge intent attempt is claimed and settled in two short transactions that lock the intent row;
+  the Task call stays outside them. The next attempt's job commits with the failed settlement.
 - Purge uses the same tenant and task key lock as link creation. The event receipt, marker,
   deletion batch and any continuation commit together. The marker blocks recreation between
   batches.

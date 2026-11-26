@@ -53,6 +53,7 @@ function setup(): {
     findMapping: vi.fn().mockResolvedValue(mapping),
     findRequestTaskKeys: vi.fn().mockResolvedValue([]),
     findPendingRequestWork: vi.fn().mockResolvedValue([]),
+    recordCheckObservation: vi.fn().mockResolvedValue(undefined),
     admit: vi.fn().mockResolvedValue('accepted'),
   };
   const work: GitDeliveryUnitOfWork = {
@@ -61,6 +62,11 @@ function setup(): {
   };
   const verify = vi.fn().mockReturnValue('a'.repeat(64));
   return { command: new AdmitGitWebhook(work, { verify }), transaction, work, verify };
+}
+
+/** Matches the asserted fact members while ignoring the request snapshot. */
+function objectContaining(value: object): unknown {
+  return expect.objectContaining(value) as unknown;
 }
 
 describe('AdmitGitWebhook', () => {
@@ -82,13 +88,13 @@ describe('AdmitGitWebhook', () => {
       digest: 'a'.repeat(64),
       work: {
         mapping,
-        fact: {
+        fact: objectContaining({
           kind: 'actionable',
           trigger: 'pr_open',
           requestNumber: 214,
           taskKeys: ['CAD-482'],
           closingTaskKeys: [],
-        },
+        }),
       },
     });
   });
@@ -157,13 +163,13 @@ describe('AdmitGitWebhook', () => {
         digest: 'a'.repeat(64),
         work: {
           mapping,
-          fact: {
+          fact: objectContaining({
             kind: 'actionable',
             trigger: 'pr_closed',
             requestNumber: 214,
             taskKeys: ['CAD-483'],
             closingTaskKeys: [],
-          },
+          }),
         },
       });
     },
@@ -202,14 +208,14 @@ describe('AdmitGitWebhook', () => {
         digest: 'a'.repeat(64),
         work: {
           mapping,
-          fact: {
+          fact: objectContaining({
             kind: 'actionable',
             trigger: 'pr_merged',
             requestNumber: 214,
             taskKeys: ['CAD-482', 'CAD-483', 'CAD-484'],
             closingTaskKeys: closing,
             referencedTaskKeys: explicitlyReferenced,
-          },
+          }),
           prerequisiteIds: [predecessor],
         },
       });
@@ -243,14 +249,14 @@ describe('AdmitGitWebhook', () => {
       digest: 'a'.repeat(64),
       work: {
         mapping,
-        fact: {
+        fact: objectContaining({
           kind: 'actionable',
           trigger: 'pr_merged',
           requestNumber: 214,
           taskKeys: [...linked, 'CAD-22'],
           closingTaskKeys: ['CAD-22'],
           referencedTaskKeys: ['CAD-22'],
-        },
+        }),
         prerequisiteIds: [predecessor],
       },
     });
@@ -285,9 +291,20 @@ describe('AdmitGitWebhook', () => {
     });
     expect(transaction.findRequestTaskKeys).not.toHaveBeenCalled();
     expect(transaction.admit).not.toHaveBeenCalled();
+    expect(transaction.recordCheckObservation).not.toHaveBeenCalled();
 
     const checkInput = { ...input, event: 'check_suite', rawBody };
     await expect(command.execute(checkInput)).resolves.toEqual({ status: 'accepted' });
+    // The observation is kept for the repository and head even though no link has that head yet.
+    expect(transaction.recordCheckObservation).toHaveBeenLastCalledWith(mapping.binding, {
+      provider: 'github',
+      attemptId: 277,
+      headSha,
+      observedAtMs: Date.parse(when),
+      completedAtMs: Date.parse(when),
+      status: 'completed',
+      conclusion: 'success',
+    });
     expect(transaction.admit).toHaveBeenLastCalledWith({
       deliveryId: input.deliveryId,
       digest: 'a'.repeat(64),
@@ -302,17 +319,81 @@ describe('AdmitGitWebhook', () => {
       digest: 'a'.repeat(64),
       work: {
         mapping,
-        fact: {
+        fact: objectContaining({
           kind: 'actionable',
           trigger: 'pr_checks',
           requestNumber: 214,
           taskKeys: ['CAD-484'],
           closingTaskKeys: [],
           checks: { requestNumber: 214, headSha, attemptId: 277, completedAtMs: Date.parse(when) },
-        },
+        }),
       },
     });
   });
+
+  it('keeps a suite observation without request work when GitHub names no single PR', async () => {
+    const { command, transaction } = setup();
+    const headSha = 'b'.repeat(40);
+    const body = {
+      action: 'requested',
+      installation: payload.installation,
+      repository: payload.repository,
+      check_suite: {
+        id: 278,
+        status: 'queued',
+        conclusion: null,
+        updated_at: '2026-11-08T20:18:44Z',
+        head_sha: headSha,
+        head_branch: payload.pull_request.head.ref,
+        pull_requests: [],
+      },
+    };
+    await expect(
+      command.execute({
+        ...input,
+        event: 'check_suite',
+        rawBody: new TextEncoder().encode(JSON.stringify(body)),
+      }),
+    ).resolves.toEqual({ status: 'accepted' });
+    expect(transaction.recordCheckObservation).toHaveBeenCalledWith(
+      mapping.binding,
+      expect.objectContaining({ attemptId: 278, headSha, status: 'queued', completedAtMs: null }),
+    );
+    expect(transaction.findRequestTaskKeys).not.toHaveBeenCalled();
+    expect(transaction.admit).toHaveBeenCalledWith({
+      deliveryId: input.deliveryId,
+      digest: 'a'.repeat(64),
+      work: null,
+    });
+  });
+
+  it.each(['reopened', 'edited', 'ready_for_review', 'review_requested'])(
+    'admits a GitHub %s delivery for the existing links of the request only',
+    async (action) => {
+      const { command, transaction } = setup();
+      vi.mocked(transaction.findRequestTaskKeys).mockResolvedValue(['CAD-482']);
+      const body = {
+        ...payload,
+        action,
+        pull_request: { ...payload.pull_request, updated_at: '2026-11-08T20:18:44Z' },
+      };
+      await expect(
+        command.execute({ ...input, rawBody: new TextEncoder().encode(JSON.stringify(body)) }),
+      ).resolves.toEqual({ status: 'accepted' });
+      expect(transaction.findRequestTaskKeys).toHaveBeenCalledWith(mapping.binding, 214, undefined);
+      expect(transaction.admit).toHaveBeenCalledWith({
+        deliveryId: input.deliveryId,
+        digest: 'a'.repeat(64),
+        work: {
+          mapping,
+          fact: objectContaining({
+            trigger: action === 'reopened' ? 'pr_reopened' : 'pr_updated',
+            taskKeys: ['CAD-482'],
+          }),
+        },
+      });
+    },
+  );
 
   it('retains closure for a preceding authorized opening that has not yet created the link', async () => {
     const { command, transaction } = setup();
@@ -337,13 +418,13 @@ describe('AdmitGitWebhook', () => {
       digest: 'a'.repeat(64),
       work: {
         mapping,
-        fact: {
+        fact: objectContaining({
           kind: 'actionable',
           trigger: 'pr_closed',
           requestNumber: 214,
           taskKeys: ['CAD-482'],
           closingTaskKeys: [],
-        },
+        }),
         prerequisiteIds: [id],
       },
     });
@@ -460,13 +541,13 @@ describe('AdmitGitWebhook', () => {
       digest: 'a'.repeat(64),
       work: {
         mapping: gitlabMapping,
-        fact: {
+        fact: objectContaining({
           kind: 'actionable',
           trigger: 'pr_open',
           requestNumber: 31,
           taskKeys: ['CAD-482'],
           closingTaskKeys: [],
-        },
+        }),
       },
     });
   });

@@ -17,7 +17,7 @@ export class DrizzleGitRequestPredecessorsRepository {
       readonly receiverRevision: number;
       readonly mapping: GitDeliveryMapping;
       readonly requestNumber: number;
-      readonly triggers: readonly ('pr_open' | 'pr_head' | 'pr_merged')[];
+      readonly triggers: readonly ('pr_open' | 'pr_head' | 'pr_updated' | 'pr_merged')[];
     },
   ): Promise<readonly { readonly id: string; readonly taskKeys: readonly string[] }[] | null> {
     if (scope.kind !== 'tenant' || scope.organizationId !== input.organizationId) {
