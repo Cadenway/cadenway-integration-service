@@ -51,6 +51,7 @@ import {
   verifyGitHubWebhook,
   verifyGitLabWebhook,
 } from './infrastructure/adapters/provider-signatures/git-webhook-signature.adapter.js';
+import { GitLinkFollowUpLogAdapter } from './infrastructure/adapters/operator-reports/git-link-follow-up-log.adapter.js';
 import { GitTaskHttpAdapter } from './infrastructure/adapters/task-service/git-task-http.adapter.js';
 import { GitLinksController } from './presentation/http/controllers/links/git-links.controller.js';
 import { GitWebhooksController } from './presentation/http/controllers/deliveries/git-webhooks.controller.js';
@@ -208,7 +209,10 @@ function linksMaintained(config: AppConfig): boolean {
         tenants: TenantTransactionRunner<DatabaseSchema>,
         jobs: GitMergeIntentJobsProducer,
       ) =>
-        new RunGitLinkMaintenance(new DrizzleGitLinkMaintenanceUnitOfWork(runner, tenants, jobs)),
+        new RunGitLinkMaintenance(
+          new DrizzleGitLinkMaintenanceUnitOfWork(runner, tenants, jobs),
+          new GitLinkFollowUpLogAdapter(),
+        ),
     },
     {
       provide: ListTaskGitLinks,

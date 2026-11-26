@@ -34,7 +34,7 @@ export class GitLinkMaintenanceJobHandler implements OnApplicationBootstrap {
     await this.workers.work(this.queue, (job) => this.handle(job));
   }
 
-  /** Runs one pass and logs what needs follow-up. */
+  /** Runs one pass and logs its summary. */
   public async handle(job: Job): Promise<void> {
     job.signal.throwIfAborted();
     let report: Awaited<ReturnType<RunGitLinkMaintenance['execute']>>;
@@ -43,18 +43,7 @@ export class GitLinkMaintenanceJobHandler implements OnApplicationBootstrap {
     } catch {
       throw new Error('Git link maintenance did not complete.');
     }
-    for (const link of report.reconciliationPending) {
-      this.logger.warn(
-        { ...link, reason: 'git-link-reconciliation-pending' },
-        'Git link lifecycle awaits reconciliation',
-      );
-    }
-    for (const link of report.unconfirmedMergeIntents) {
-      this.logger.warn(
-        { ...link, reason: 'git-merge-intent-unconfirmed' },
-        'Git merge intent stays pending past the Task receipt window',
-      );
-    }
+    // Each follow-up was reported before it was marked; this line only summarizes the pass.
     this.logger.log(
       {
         prunedObservations: report.prunedObservations,

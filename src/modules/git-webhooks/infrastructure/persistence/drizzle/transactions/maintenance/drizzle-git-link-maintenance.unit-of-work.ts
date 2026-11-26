@@ -39,52 +39,74 @@ export class DrizzleGitLinkMaintenanceUnitOfWork implements GitLinkMaintenanceUn
     return this.runner.run((scope) => this.observations.pruneExpired(scope, limit));
   }
 
-  /** Stamps `reconciliation_reported_at` so each mark is reported once. */
-  public reportReconciliationPending(limit: number): Promise<readonly GitLinkFollowUp[]> {
+  /** Lists unreported marks, oldest first, through the partial index on the mark. */
+  public findReconciliationPending(limit: number): Promise<readonly GitLinkFollowUp[]> {
+    return this.runner.run(
+      async (scope) => {
+        const result = await scope.db.execute<{
+          readonly organization_id: string;
+          readonly id: string;
+        }>(sql`
+          select organization_id, id from ${gitLinks}
+           where reconciliation_pending_since is not null
+             and reconciliation_reported_at is null
+             and status <> 'merged'
+           order by reconciliation_pending_since
+           limit ${limit}`);
+        return result.rows.map((row) => ({
+          organizationId: row.organization_id,
+          gitLinkId: row.id,
+        }));
+      },
+      { readOnly: true },
+    );
+  }
+
+  /** Stamps `reconciliation_reported_at` on reported marks that are still pending. */
+  public markReconciliationReported(followUps: readonly GitLinkFollowUp[]): Promise<void> {
     return this.runner.run(async (scope) => {
-      const result = await scope.db.execute<{
-        readonly organization_id: string;
-        readonly id: string;
-      }>(sql`
-        update ${gitLinks}
-           set reconciliation_reported_at = now()
-         where (organization_id, id) in (
-           select organization_id, id from ${gitLinks}
-            where reconciliation_pending_since is not null
-              and reconciliation_reported_at is null
-              and status <> 'merged'
-            order by reconciliation_pending_since
-            limit ${limit}
-            for update skip locked
-         )
-        returning organization_id, id`);
-      return result.rows.map((row) => ({ organizationId: row.organization_id, gitLinkId: row.id }));
+      for (const followUp of followUps) {
+        await scope.db.execute(sql`
+          update ${gitLinks} set reconciliation_reported_at = now()
+           where organization_id = ${followUp.organizationId} and id = ${followUp.gitLinkId}
+             and reconciliation_pending_since is not null
+             and reconciliation_reported_at is null`);
+      }
     });
   }
 
-  /** Stamps `reported_at` so each unconfirmed intent is reported once. */
-  public reportUnconfirmedMergeIntents(limit: number): Promise<readonly GitLinkFollowUp[]> {
+  /** Lists unreported intents left pending past the window, oldest window first. */
+  public findUnconfirmedMergeIntents(limit: number): Promise<readonly GitLinkFollowUp[]> {
+    return this.runner.run(
+      async (scope) => {
+        const result = await scope.db.execute<{
+          readonly organization_id: string;
+          readonly link_id: string;
+        }>(sql`
+          select organization_id, link_id from ${gitMergeIntents}
+           where status = 'pending'
+             and reported_at is null
+             and window_started_at < now() - make_interval(secs => ${gitMergeIntentWindowMs / 1_000})
+           order by window_started_at
+           limit ${limit}`);
+        return result.rows.map((row) => ({
+          organizationId: row.organization_id,
+          gitLinkId: row.link_id,
+        }));
+      },
+      { readOnly: true },
+    );
+  }
+
+  /** Stamps `reported_at` on reported intents that are still pending. */
+  public markMergeIntentsReported(followUps: readonly GitLinkFollowUp[]): Promise<void> {
     return this.runner.run(async (scope) => {
-      const result = await scope.db.execute<{
-        readonly organization_id: string;
-        readonly link_id: string;
-      }>(sql`
-        update ${gitMergeIntents}
-           set reported_at = now()
-         where (organization_id, link_id) in (
-           select organization_id, link_id from ${gitMergeIntents}
-            where status = 'pending'
-              and reported_at is null
-              and window_started_at < now() - make_interval(secs => ${gitMergeIntentWindowMs / 1_000})
-            order by window_started_at
-            limit ${limit}
-            for update skip locked
-         )
-        returning organization_id, link_id`);
-      return result.rows.map((row) => ({
-        organizationId: row.organization_id,
-        gitLinkId: row.link_id,
-      }));
+      for (const followUp of followUps) {
+        await scope.db.execute(sql`
+          update ${gitMergeIntents} set reported_at = now()
+           where organization_id = ${followUp.organizationId} and link_id = ${followUp.gitLinkId}
+             and status = 'pending' and reported_at is null`);
+      }
     });
   }
 

@@ -272,6 +272,17 @@ describe('Git link settlement, merge intents and the link read', () => {
          from git_merge_intents where task_key = $1`,
       [taskKey],
     );
+  /** Lists then marks follow-ups, as a maintenance pass does after reporting them. */
+  const reportIntents = async () => {
+    const found = await maintenance.findUnconfirmedMergeIntents(100);
+    await maintenance.markMergeIntentsReported(found);
+    return found;
+  };
+  const reportMarks = async () => {
+    const found = await maintenance.findReconciliationPending(100);
+    await maintenance.markReconciliationReported(found);
+    return found;
+  };
   const intentJobs = (linkId: string) =>
     query<{ readonly start_after: Date }>(
       `select start_after from pgboss.job
@@ -416,9 +427,9 @@ describe('Git link settlement, merge intents and the link read', () => {
       [input.linkId],
     );
     await expect(intents.prepare(input)).resolves.toEqual({ status: 'expired' });
-    const reported = await maintenance.reportUnconfirmedMergeIntents(100);
+    const reported = await reportIntents();
     expect(reported).toContainEqual({ organizationId, gitLinkId: input.linkId });
-    expect(await maintenance.reportUnconfirmedMergeIntents(100)).not.toContainEqual({
+    expect(await reportIntents()).not.toContainEqual({
       organizationId,
       gitLinkId: input.linkId,
     });
@@ -458,16 +469,16 @@ describe('Git link settlement, merge intents and the link read', () => {
         'select head_sha, repository_id::int as repository_id from git_check_observations',
       ),
     ).toEqual([{ head_sha: current, repository_id: mapping.binding.repositoryId }]);
-    const marked = await maintenance.reportReconciliationPending(100);
+    const marked = await reportMarks();
     expect(marked).toHaveLength(1);
     expect(marked[0]?.organizationId).toBe(organizationId);
     // Each mark is reported once; a merged link is final and is not reported.
-    expect(await maintenance.reportReconciliationPending(100)).toEqual([]);
+    expect(await reportMarks()).toEqual([]);
     await settle(claim('CAD-494', 404, { trigger: 'pr_merged', closingTaskKeys: [] }));
     await query(
       `update git_links set reconciliation_pending_since = now() where task_key = 'CAD-494'`,
     );
-    expect(await maintenance.reportReconciliationPending(100)).toEqual([]);
+    expect(await reportMarks()).toEqual([]);
   });
 
   it('starts the receipt window when the dispatch claim was created', async () => {
