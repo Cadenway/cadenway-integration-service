@@ -8,7 +8,7 @@ import {
 import { JobProducer, JobScheduler, JobWorkerRegistry } from '@cadenway/nest-jobs/runtime';
 import { EventConsumers } from '@cadenway/nest-messaging';
 import { OutboxWriter } from '@cadenway/nest-messaging/outbox/writer';
-import { Module } from '@nestjs/common';
+import { Inject, Module, type OnApplicationBootstrap } from '@nestjs/common';
 import { z } from 'zod';
 
 import type { AppConfig } from '../../config/app-config.js';
@@ -51,6 +51,7 @@ import {
   verifyGitHubWebhook,
   verifyGitLabWebhook,
 } from './infrastructure/adapters/provider-signatures/git-webhook-signature.adapter.js';
+import { GitLinkRolloutWarning } from './infrastructure/adapters/operator-reports/git-link-rollout-warning.adapter.js';
 import { GitLinkFollowUpLogAdapter } from './infrastructure/adapters/operator-reports/git-link-follow-up-log.adapter.js';
 import { GitTaskHttpAdapter } from './infrastructure/adapters/task-service/git-task-http.adapter.js';
 import { GitLinksController } from './presentation/http/controllers/links/git-links.controller.js';
@@ -285,8 +286,18 @@ function linksMaintained(config: AppConfig): boolean {
     },
   ],
 })
-export class GitWebhooksModule {
+export class GitWebhooksModule implements OnApplicationBootstrap {
+  // #region Constructor
+  /** Reads the validated configuration of the service. */
+  public constructor(@Inject(CONFIG) private readonly config: AppConfig) {}
+  // #endregion
+
   // #region Methods
+  /** Reminds operators of the link rollout rule while link recording is on. */
+  public onApplicationBootstrap(): void {
+    new GitLinkRolloutWarning().report(this.config.GIT_LINK_EVENTS_ENABLED);
+  }
+
   /** Completes this capability's migrations on a migrator session outside a transaction. */
   public static finishMigrations(
     client: Parameters<typeof finishGitLinkProjectionMigration>[0],

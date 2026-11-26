@@ -71,6 +71,12 @@ consumer and Task exposes its signed Git command. Set `GIT_LINK_PURGE_ENABLED` b
 activation and keep it enabled when new link admission pauses so existing links keep receiving
 terminal task purges.
 
+Rollout: Keep `GIT_LINK_EVENTS_ENABLED` off during any deployment where this release and an earlier
+one both run, during the GitOps agent's rolling replacement as during a rollback: a worker of an
+earlier release can settle a newer head on a link and leave the previous head's checks on it. Turn
+it on only once no earlier replica runs. To roll back, turn it off first, drain the link queues,
+then roll back.
+
 ## Invariants
 
 - Configure a signing key dedicated to each receiver. Verify the original body before decoding JSON.
