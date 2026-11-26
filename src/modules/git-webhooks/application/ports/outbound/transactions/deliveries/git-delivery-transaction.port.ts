@@ -1,6 +1,7 @@
 import type { GitDeliveryMapping } from '../../../../models/deliveries/git-delivery-mapping.model.js';
 import type { GitRepositoryIdentity } from '../../../../models/deliveries/git-repository-identity.model.js';
 import type { GitCheckObservation } from '../../../../../domain/value-objects/checks/git-check-observation.value-object.js';
+import type { VerifiedGitRequestState } from '../../../../../domain/value-objects/deliveries/verified-git-request-state.value-object.js';
 import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/deliveries/verified-git-delivery.value-object.js';
 
 /** Locked receiver transaction for mapping resolution and atomic delivery admission. */
@@ -24,14 +25,17 @@ export interface GitDeliveryTransaction {
 
   /**
    * Queues the paged refresh of every existing link whose current head is the observation's
-   * head in the mapped repository, leaving out the links of `excludeRequestNumber`, which the
-   * delivery's own work refreshes. Does nothing while link recording is disabled.
+   * head in the mapped repository and, when the delivery reports its request's state, the paged
+   * realignment of every link of that request. Does nothing while link recording is disabled.
    */
   readonly scheduleHeadRefresh: (input: {
     readonly digest: string;
     readonly binding: GitRepositoryIdentity;
     readonly observation: GitCheckObservation;
-    readonly excludeRequestNumber: number | null;
+    readonly request: {
+      readonly number: number;
+      readonly state?: VerifiedGitRequestState;
+    } | null;
   }) => Promise<void>;
 
   /** Finds earlier admitted work that can establish an authorized request link. */

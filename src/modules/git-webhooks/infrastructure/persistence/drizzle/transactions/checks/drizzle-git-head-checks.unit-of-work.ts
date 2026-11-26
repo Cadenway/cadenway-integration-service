@@ -21,7 +21,7 @@ export class DrizzleGitHeadChecksUnitOfWork implements GitHeadChecksUnitOfWork {
   /** Uses the tenant runner, the link store and the dispatch and page job producers. */
   public constructor(
     private readonly runner: TenantTransactionRunner<DatabaseSchema>,
-    private readonly links: Pick<DrizzleGitLinkRepository, 'findHeadTargetsPage'>,
+    private readonly links: Pick<DrizzleGitLinkRepository, 'findTargetsPage'>,
     private readonly dispatch: Pick<GitDispatchJobsProducer, 'enqueue'>,
     private readonly pages: Pick<GitHeadChecksJobsProducer, 'enqueue'>,
   ) {}
@@ -68,39 +68,55 @@ export class DrizzleGitHeadChecksUnitOfWork implements GitHeadChecksUnitOfWork {
           );
           const mapping = await transaction.findMapping(page.binding);
           if (mapping === null) return stopped;
-          const { targets, more } = await this.links.findHeadTargetsPage(scope, {
+          const { target } = page;
+          const { targets, more } = await this.links.findTargetsPage(scope, {
             organizationId: page.organizationId,
             receiverId: page.receiverId,
             binding: page.binding,
-            headSha: page.headSha,
-            excludeRequestNumber: page.excludeRequestNumber,
+            target:
+              target.kind === 'head'
+                ? { kind: 'head', headSha: page.headSha }
+                : { kind: 'request', requestNumber: target.requestNumber },
             after: page.after,
             limit,
           });
+          const checks = {
+            headSha: page.headSha,
+            attemptId: page.attemptId,
+            completedAtMs: page.observedAtMs,
+            observed: true,
+          } as const;
+          const taskKeys = [...new Set(targets.map(({ taskKey }) => taskKey))];
           if (targets.length !== 0) {
             await transaction.admitRefresh({
               digest: createHash('sha256')
-                .update(`head-checks:${page.source}:${String(page.page)}`)
+                .update(`head-checks:${page.source}:${target.kind}:${String(page.page)}`)
                 .digest('hex'),
               work: {
                 mapping,
-                fact: {
-                  kind: 'actionable',
-                  trigger: 'head_checks',
-                  headSha: page.headSha,
-                  targets: targets.map(({ taskKey, requestNumber }) => ({
-                    taskKey,
-                    requestNumber,
-                  })),
-                  checks: {
-                    headSha: page.headSha,
-                    attemptId: page.attemptId,
-                    completedAtMs: page.observedAtMs,
-                    observed: true,
-                  },
-                  taskKeys: [...new Set(targets.map(({ taskKey }) => taskKey))],
-                  closingTaskKeys: [],
-                },
+                fact:
+                  target.kind === 'head'
+                    ? {
+                        kind: 'actionable',
+                        trigger: 'head_checks',
+                        headSha: page.headSha,
+                        targets: targets.map(({ taskKey, requestNumber }) => ({
+                          taskKey,
+                          requestNumber,
+                        })),
+                        checks,
+                        taskKeys,
+                        closingTaskKeys: [],
+                      }
+                    : {
+                        kind: 'actionable',
+                        trigger: 'pr_checks',
+                        requestNumber: target.requestNumber,
+                        checks: { ...checks, requestNumber: target.requestNumber },
+                        requestState: target.requestState,
+                        taskKeys,
+                        closingTaskKeys: [],
+                      },
               },
             });
           }

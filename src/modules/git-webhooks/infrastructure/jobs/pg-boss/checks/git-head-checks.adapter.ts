@@ -27,11 +27,11 @@ export class GitHeadChecksJobsProducer {
       observedAtMs: page.observedAtMs,
       source: page.source,
       page: page.page,
-      excludeRequestNumber: page.excludeRequestNumber,
+      target: page.target,
       after: page.after,
     };
     await this.producer.enqueue(scope, GIT_HEAD_CHECKS_QUEUE.name, payload, {
-      occurrenceKey: `${page.source}:${String(page.page)}`,
+      occurrenceKey: `${page.source}:${page.target.kind}:${String(page.page)}`,
     });
   }
   // #endregion

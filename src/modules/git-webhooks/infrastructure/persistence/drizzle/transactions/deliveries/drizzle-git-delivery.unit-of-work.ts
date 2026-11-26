@@ -99,13 +99,13 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     );
   }
 
-  /** Queues the first page of the head refresh; disabled link producers refresh nothing. */
+  /** Queues the first page of each refresh; disabled link producers refresh nothing. */
   public async scheduleHeadRefresh(
     input: Parameters<GitDeliveryTransaction['scheduleHeadRefresh']>[0],
   ): Promise<void> {
     if (this.links === undefined || this.headChecks === undefined) return;
     if (input.binding.provider !== this.provider) return;
-    await this.headChecks.enqueue(this.scope, {
+    const first = {
       organizationId: this.organizationId,
       receiverId: this.receiverId,
       binding: input.binding,
@@ -114,9 +114,16 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
       observedAtMs: input.observation.observedAtMs,
       source: input.digest,
       page: 0,
-      excludeRequestNumber: input.excludeRequestNumber,
       after: null,
-    });
+    };
+    await this.headChecks.enqueue(this.scope, { ...first, target: { kind: 'head' } });
+    const state = input.request?.state;
+    if (input.request !== null && state !== undefined) {
+      await this.headChecks.enqueue(this.scope, {
+        ...first,
+        target: { kind: 'request', requestNumber: input.request.number, requestState: state },
+      });
+    }
   }
 
   /** Finds accepted dependent work under the same receiver and mapping as the new observation. */

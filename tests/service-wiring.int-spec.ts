@@ -29,6 +29,7 @@ import { appConfigSchema } from '../src/config/app-config.js';
 import { ListTaskGitLinksInternalResponse } from '@cadenway/contracts/validators/internal/integration-service';
 
 import {
+  GIT_HEAD_CHECKS_QUEUE,
   GIT_LINK_DISPATCH_QUEUE,
   GIT_LINK_DISPATCH_V2_QUEUE,
   GIT_LINK_MAINTENANCE_QUEUE,
@@ -725,7 +726,7 @@ describe('integration-service wiring', () => {
     );
   });
 
-  it('resumes a signed check once its preceding opening is settled', async () => {
+  it('announces a check stored while its opening waited once the opening settles', async () => {
     const taskKey = 'CAD-488';
     const path = `/internal/v1/tasks/${taskKey}/git-status-actions`;
     const tenant = service().get(TenantTransactionRunner);
@@ -809,7 +810,7 @@ describe('integration-service wiring', () => {
       );
       await send(checkBody, checkId, 'check_suite').expect(204);
       const admitted = await query(
-        `select d.id, d.work->'prerequisiteIds' as prerequisites,
+        `select d.work,
                 (select receipt_id from git_webhook_delivery_ids
                   where organization_id = $1 and receiver_id = $2 and delivery_id = $3) as opening
            from git_webhook_deliveries d join git_webhook_delivery_ids a
@@ -817,45 +818,19 @@ describe('integration-service wiring', () => {
           where a.organization_id = $1 and a.receiver_id = $2 and a.delivery_id = $4`,
         [gitOrganizationId, gitReceiverId, openingId, checkId],
       );
-      const row = admitted.rows[0] as
-        { id: string; opening: string; prerequisites: readonly string[] } | undefined;
-      expect(row?.prerequisites).toEqual([row?.opening]);
+      const row = admitted.rows[0] as { work: unknown; opening: string } | undefined;
       if (row === undefined) throw new Error('The signed check was not admitted.');
-      await vi.waitFor(
-        () => {
-          const deferred = enqueue.mock.calls.filter(
-            ([, queue, payload, options]) =>
-              queue === GIT_LINK_DISPATCH_V2_QUEUE.name &&
-              typeof payload === 'object' &&
-              payload !== null &&
-              'deliveryId' in payload &&
-              payload.deliveryId === row.id &&
-              options?.startAfter instanceof Date,
-          );
-          expect(deferred).not.toHaveLength(0);
-        },
-        { timeout: 12_000, interval: 50 },
-      );
-      await vi.waitFor(
-        async () => {
-          const deferredJob = await migrator.query(
-            `select id from pgboss.job
-              where name = $1 and data->>'organizationId' = $2
-                and data->'payload'->>'deliveryId' = $3 and data->'payload'->>'taskKey' = $4
-                and start_after > created_on`,
-            [GIT_LINK_DISPATCH_V2_QUEUE.name, gitOrganizationId, row.id, taskKey],
-          );
-          expect(deferredJob.rows.length).toBeGreaterThan(0);
-        },
-        { timeout: 3_000, interval: 50 },
-      );
-      expect(
-        taskCommands.filter(({ path: commandPath, body }) =>
-          commandPath === path && typeof body === 'object' && body !== null && 'status' in body
-            ? body.status === null
-            : false,
-        ),
-      ).toEqual([]);
+      // The check admits no work of its own: its observation is stored and the links on its
+      // head are refreshed in pages, while the opening is still waiting for Task.
+      expect(row.work).toBeNull();
+      const refresh = () =>
+        migrator.query(
+          `select state from pgboss.job
+            where name = $1 and data->>'organizationId' = $2
+              and data->'payload'->>'headSha' = $3`,
+          [GIT_HEAD_CHECKS_QUEUE.name, gitOrganizationId, sha],
+        );
+      expect((await refresh()).rows).toHaveLength(1);
       expect((await events()).rows).toEqual([]);
 
       heldTaskReply = undefined;
@@ -876,12 +851,31 @@ describe('integration-service wiring', () => {
         { timeout: 15_000, interval: 100 },
       );
       await send(checkBody, checkId, 'check_suite').expect(204);
+      // Whenever the refresh page ran, it changes nothing more once it completed.
+      await vi.waitFor(
+        async () => {
+          expect((await refresh()).rows).toEqual([{ state: 'completed' }]);
+        },
+        { timeout: 15_000, interval: 100 },
+      );
+      await vi.waitFor(
+        async () => {
+          const pending = await migrator.query(
+            `select count(*)::int as count from pgboss.job
+              where name = $1 and data->>'organizationId' = $2
+                and data->'payload'->>'taskKey' = $3 and state not in ('completed', 'failed')`,
+            [GIT_LINK_DISPATCH_V2_QUEUE.name, gitOrganizationId, taskKey],
+          );
+          expect(pending.rows).toEqual([{ count: 0 }]);
+        },
+        { timeout: 15_000, interval: 100 },
+      );
       expect((await events()).rows).toEqual([
         { event_name: 'git.pr-opened.v1', version: 1 },
         { event_name: 'git.link-updated.v1', version: 2 },
       ]);
-      const commands = taskCommands.filter(({ path: commandPath }) => commandPath === path);
-      const reviewKeys = commands
+      const reviewKeys = taskCommands
+        .filter(({ path: commandPath }) => commandPath === path)
         .filter(
           ({ body }) =>
             typeof body === 'object' &&
@@ -891,23 +885,6 @@ describe('integration-service wiring', () => {
         )
         .map(({ key }) => key);
       expect(new Set(reviewKeys).size).toBe(1);
-      // The deferred check still authorizes its target once, and changes nothing more.
-      await vi.waitFor(
-        () => {
-          expect(
-            taskCommands.filter(
-              ({ path: commandPath, body }) =>
-                commandPath === path &&
-                typeof body === 'object' &&
-                body !== null &&
-                'status' in body &&
-                body.status === null,
-            ),
-          ).toHaveLength(1);
-        },
-        { timeout: 15_000, interval: 100 },
-      );
-      expect((await events()).rows).toHaveLength(2);
     } finally {
       heldTaskReply = undefined;
       release();

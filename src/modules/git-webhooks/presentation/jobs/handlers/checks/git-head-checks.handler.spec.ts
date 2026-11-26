@@ -12,7 +12,7 @@ const payload = {
   observedAtMs: Date.UTC(2026, 10, 7, 15, 20),
   source: 'a'.repeat(64),
   page: 1,
-  excludeRequestNumber: null,
+  target: { kind: 'head' },
   after: { taskKey: 'CAD-482', linkId: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e03' },
 };
 

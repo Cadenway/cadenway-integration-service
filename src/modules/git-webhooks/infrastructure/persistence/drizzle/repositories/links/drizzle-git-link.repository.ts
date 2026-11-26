@@ -45,17 +45,18 @@ export class DrizzleGitLinkRepository {
   // #region Methods
   /**
    * Pages through the pull request links of the receiver's repository whose current head is
-   * `headSha`, whatever their request, in `(taskKey, id)` order after `after`, leaving out the
-   * links of `excludeRequestNumber`. Returns at most `limit` links and whether more follow.
+   * `headSha`, whatever their request, or all links of one request whatever their head, in
+   * `(taskKey, id)` order after `after`. Returns at most `limit` links and whether more follow.
    */
-  public async findHeadTargetsPage(
+  public async findTargetsPage(
     scope: TransactionScope<DatabaseSchema>,
     input: {
       readonly organizationId: string;
       readonly receiverId: string;
       readonly binding: GitReceiverBinding;
-      readonly headSha: string;
-      readonly excludeRequestNumber: number | null;
+      readonly target:
+        | { readonly kind: 'head'; readonly headSha: string }
+        | { readonly kind: 'request'; readonly requestNumber: number };
       readonly after: { readonly taskKey: string; readonly linkId: string } | null;
       readonly limit: number;
     },
@@ -75,7 +76,9 @@ export class DrizzleGitLinkRepository {
       eq(gitLinks.organizationId, input.organizationId),
       eq(gitLinks.receiverId, input.receiverId),
       eq(gitLinks.provider, binding.provider),
-      eq(gitLinks.headSha, input.headSha),
+      input.target.kind === 'head'
+        ? eq(gitLinks.headSha, input.target.headSha)
+        : eq(gitLinks.identityHash, linkHash(binding, 'pull-request', input.target.requestNumber)),
       sql`${gitLinks.identity} ->> 'kind' = 'pull-request'`,
       sql`${gitLinks.identity} -> 'binding' ->> 'repositoryId' = ${String(binding.repositoryId)}`,
       sql`not exists (
@@ -87,11 +90,6 @@ export class DrizzleGitLinkRepository {
     if (binding.provider === 'github') {
       predicates.push(
         sql`${gitLinks.identity} -> 'binding' ->> 'installationId' = ${String(binding.installationId)}`,
-      );
-    }
-    if (input.excludeRequestNumber !== null) {
-      predicates.push(
-        sql`${gitLinks.identity} ->> 'requestNumber' <> ${String(input.excludeRequestNumber)}`,
       );
     }
     if (input.after !== null) {

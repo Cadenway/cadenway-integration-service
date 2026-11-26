@@ -117,8 +117,9 @@ terminal task purges.
   observation. It is recomputed on creation, on a head change and on a check of the current head.
   Each observation refreshes every existing link whose current head is its head, in resumable
   pages of 20 links queued on `integration.refresh-git-head-checks`, each recorded as a receipt of
-  its own. The links of the request a delivery names go through the delivery's receipt instead; a
-  GitLab merge request pipeline reaches all of them whatever their head, to realign the lifecycle.
+  its own, the links of the request the delivery names included; the check receipt itself admits
+  no work. A GitLab merge request pipeline also pages through every link of its merge request,
+  whatever their head, to realign the lifecycle from the state it reports.
   A check receipt of the previous release, without observation, only advances the completion
   time, which the read returns as `checksCompletedAt` while `checks` stays absent. An observation whose head is no current
   head of a link of its receiver and repository is pruned 7 days after its last update by the

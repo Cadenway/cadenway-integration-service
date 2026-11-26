@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 
 import {
@@ -140,7 +140,13 @@ describe('Git link settlement, merge intents and the link read', () => {
 
   const settle = (current: GitDispatchClaim, using = settlement) =>
     inOrganization(() =>
-      runner.run((scope) => using.record(scope, current, receiverId, placement)),
+      runner.run((scope) =>
+        // Task answers each task key with the ID of its own task.
+        using.record(scope, current, receiverId, {
+          ...placement,
+          taskId: `019a700b-1a2b-7c3d-8e4f-${createHash('sha256').update(current.taskKey).digest('hex').slice(0, 12)}`,
+        }),
+      ),
     );
   const query = <R extends pg.QueryResultRow>(text: string, values: unknown[] = []): Promise<R[]> =>
     inOrganization(() =>
@@ -615,9 +621,9 @@ describe('Git link settlement, merge intents and the link read', () => {
     ).toEqual([{ title: 'Admitted second', version: 2 }]);
   });
 
-  it('refreshes every link on a head in resumable pages, apart from the named request', async () => {
+  it('refreshes every link on a head in resumable pages, the named request included', async () => {
     const head = '9'.repeat(40);
-    // 25 links of 25 tasks on one head, and the named request's link.
+    // 26 links of 26 tasks on one head, one of them the request the delivery names.
     for (let index = 0; index < 26; index += 1) {
       await settle(
         claim(`CAD-${String(600 + index)}`, 500 + index, {
@@ -636,24 +642,24 @@ describe('Git link settlement, merge intents and the link read', () => {
       observedAtMs: T,
       source: 'f'.repeat(64),
       page: 0,
-      excludeRequestNumber: 525,
+      target: { kind: 'head' },
       after: null,
-    };
+    } as const;
     await expect(headChecks.refresh(page, 20)).resolves.toEqual({
       status: 'refreshed',
       links: 20,
       more: true,
     });
     const next = await query<{ readonly data: { readonly payload: typeof page } }>(
-      'select data from pgboss.job where name = $1',
-      [GIT_HEAD_CHECKS_QUEUE.name],
+      "select data from pgboss.job where name = $1 and data -> 'payload' ->> 'source' = $2",
+      [GIT_HEAD_CHECKS_QUEUE.name, page.source],
     );
     expect(next).toHaveLength(1);
     const second = { ...next[0]?.data.payload, organizationId } as typeof page;
     expect(second).toMatchObject({ page: 1, after: { taskKey: 'CAD-619' } });
     await expect(headChecks.refresh(second, 20)).resolves.toEqual({
       status: 'refreshed',
-      links: 5,
+      links: 6,
       more: false,
     });
     // A page that runs again records nothing more.
@@ -664,19 +670,69 @@ describe('Git link settlement, merge intents and the link read', () => {
           and work -> 'fact' ->> 'headSha' = $1 order by created_at`,
       [head],
     );
-    expect(receipts).toEqual([{ targets: 20 }, { targets: 5 }]);
+    expect(receipts).toEqual([{ targets: 20 }, { targets: 6 }]);
     const dispatched = await query<{ readonly count: number }>(
       `select count(*)::int as count from pgboss.job
         where name = $1 and data -> 'payload' ->> 'taskKey' like 'CAD-6%'`,
       [GIT_LINK_DISPATCH_V2_QUEUE.name],
     );
-    expect(dispatched).toEqual([{ count: 25 }]);
-    const named = await query(
-      `select 1 from git_webhook_deliveries
-        where work -> 'fact' ->> 'trigger' = 'head_checks'
-          and work -> 'fact' -> 'targets' @> '[{"taskKey": "CAD-625"}]'`,
+    expect(dispatched).toEqual([{ count: 26 }]);
+  });
+
+  it('realigns every link of a busy request a pipeline names, in pages, whatever their head', async () => {
+    // 25 tasks link the same merge request, on two different heads.
+    for (let index = 0; index < 25; index += 1) {
+      await settle(
+        claim(`CAD-${String(700 + index)}`, 900, {
+          trigger: 'pr_open',
+          closingTaskKeys: [],
+          head: { sha: (index % 2 === 0 ? '7' : '8').repeat(40), observedAtMs: T },
+        }),
+      );
+    }
+    const page = {
+      organizationId,
+      receiverId,
+      binding: mapping.binding,
+      headSha: '7'.repeat(40),
+      attemptId: 31,
+      observedAtMs: T + 1_000,
+      source: 'e'.repeat(64),
+      page: 0,
+      target: {
+        kind: 'request',
+        requestNumber: 900,
+        requestState: { state: 'merged', observedAtMs: T + 1_000 },
+      },
+      after: null,
+    } as const;
+    await expect(headChecks.refresh(page, 20)).resolves.toEqual({
+      status: 'refreshed',
+      links: 20,
+      more: true,
+    });
+    const next = await query<{ readonly data: { readonly payload: typeof page } }>(
+      "select data from pgboss.job where name = $1 and data -> 'payload' ->> 'source' = $2",
+      [GIT_HEAD_CHECKS_QUEUE.name, page.source],
     );
-    expect(named).toEqual([]);
+    const second = { ...next[0]?.data.payload, organizationId } as typeof page;
+    expect(second).toMatchObject({ page: 1, target: { kind: 'request', requestNumber: 900 } });
+    await expect(headChecks.refresh(second, 20)).resolves.toMatchObject({ links: 5, more: false });
+    const receipts = await query<{
+      readonly trigger: string;
+      readonly keys: number;
+      readonly state: string;
+    }>(
+      `select work -> 'fact' ->> 'trigger' as trigger,
+              jsonb_array_length(work -> 'fact' -> 'taskKeys')::int as keys,
+              work -> 'fact' -> 'requestState' ->> 'state' as state
+         from git_webhook_deliveries
+        where work -> 'fact' ->> 'requestNumber' = '900' order by created_at`,
+    );
+    expect(receipts).toEqual([
+      { trigger: 'pr_checks', keys: 20, state: 'merged' },
+      { trigger: 'pr_checks', keys: 5, state: 'merged' },
+    ]);
   });
 
   it('pages a task links newest first within the organization and hides a purged task', async () => {

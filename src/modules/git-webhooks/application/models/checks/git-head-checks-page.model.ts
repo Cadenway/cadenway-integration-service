@@ -1,9 +1,11 @@
+import type { VerifiedGitRequestState } from '../../../domain/value-objects/deliveries/verified-git-request-state.value-object.js';
 import type { GitRepositoryIdentity } from '../deliveries/git-repository-identity.model.js';
 
 /**
- * One page of the refresh of every link whose current head is a verified check observation's
- * head, in the receiver's repository ("Checks", Integration AsyncAPI). Pages follow the
- * `(taskKey, linkId)` order and resume after `after`.
+ * One page of the refresh a verified check observation starts in the receiver's repository
+ * ("Checks" and "Reconciliation", Integration AsyncAPI): every link whose current head is the
+ * observed head, or every link of the merge request a GitLab pipeline reports the state of.
+ * Pages follow the `(taskKey, linkId)` order and resume after `after`.
  */
 export interface GitHeadChecksPage {
   // #region Properties
@@ -21,8 +23,14 @@ export interface GitHeadChecksPage {
   readonly source: string;
   readonly page: number;
 
-  /** Request whose links the delivery's own work already refreshes, if any. */
-  readonly excludeRequestNumber: number | null;
+  /** The links of the observed head, or those of the reported request whatever their head. */
+  readonly target:
+    | { readonly kind: 'head' }
+    | {
+        readonly kind: 'request';
+        readonly requestNumber: number;
+        readonly requestState: VerifiedGitRequestState;
+      };
 
   /** Position of the last link of the previous page. */
   readonly after: { readonly taskKey: string; readonly linkId: string } | null;

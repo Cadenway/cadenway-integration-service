@@ -65,12 +65,13 @@ export class AdmitGitWebhook {
       // Observations are kept per repository and head, also before any link exists.
       if (checks !== null) {
         await transaction.recordCheckObservation(mapping.binding, checks.observation);
-        // Every link on the observed head is refreshed; the named request through this receipt.
+        // Every link on the observed head, and every link of a request whose state a pipeline
+        // reports, is refreshed in bounded pages; the receipt itself admits no work.
         await transaction.scheduleHeadRefresh({
           digest,
           binding: mapping.binding,
           observation: checks.observation,
-          excludeRequestNumber: checks.request?.number ?? null,
+          request: checks.request ?? null,
         });
       }
       const work = fact.kind === 'actionable' ? await selectWork(transaction, mapping, fact) : null;
@@ -99,28 +100,7 @@ function readFact(
 ): { readonly fact: VerifiedGitDelivery; readonly checks: VerifiedGitChecks | null } {
   const fact = readVerifiedGitDelivery(mapping.binding, body);
   if (fact.kind !== 'ignored') return { fact, checks: null };
-  const checks = readVerifiedGitChecks(mapping.binding, body);
-  const request = checks?.request;
-  if (checks === null || request === undefined) return { fact, checks };
-  const { observation } = checks;
-  return {
-    checks,
-    fact: {
-      kind: 'actionable',
-      trigger: 'pr_checks',
-      requestNumber: request.number,
-      checks: {
-        requestNumber: request.number,
-        headSha: observation.headSha,
-        attemptId: observation.attemptId,
-        completedAtMs: observation.observedAtMs,
-        observed: true,
-      },
-      ...(request.state === undefined ? {} : { requestState: request.state }),
-      taskKeys: [],
-      closingTaskKeys: [],
-    },
-  };
+  return { fact, checks: readVerifiedGitChecks(mapping.binding, body) };
 }
 
 async function selectWork(

@@ -21,7 +21,17 @@ const jobPayload = z.strictObject({
   observedAtMs: z.int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   source: z.string().regex(/^[0-9a-f]{64}$/u),
   page: z.int().nonnegative().max(100_000),
-  excludeRequestNumber: providerId.nullable(),
+  target: z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('head') }),
+    z.strictObject({
+      kind: z.literal('request'),
+      requestNumber: providerId,
+      requestState: z.strictObject({
+        state: z.enum(['open', 'closed', 'merged']),
+        observedAtMs: z.int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+      }),
+    }),
+  ]),
   after: z
     .strictObject({
       taskKey: z.string().regex(/^[A-Z]{2,5}-[1-9][0-9]{0,8}$/u),

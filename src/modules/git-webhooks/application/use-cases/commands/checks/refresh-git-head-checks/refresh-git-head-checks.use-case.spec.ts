@@ -12,7 +12,7 @@ const page: GitHeadChecksPage = {
   observedAtMs: Date.UTC(2026, 10, 7, 15, 20),
   source: 'a'.repeat(64),
   page: 0,
-  excludeRequestNumber: 214,
+  target: { kind: 'head' },
   after: null,
 };
 
