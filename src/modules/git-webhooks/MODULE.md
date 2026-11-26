@@ -120,7 +120,7 @@ terminal task purges.
   its own. The links of the request a delivery names go through the delivery's receipt instead; a
   GitLab merge request pipeline reaches all of them whatever their head, to realign the lifecycle.
   A check receipt of the previous release, without observation, only advances the completion
-  time, which the read returns only with an aggregate. An observation whose head is no current
+  time, which the read returns as `checksCompletedAt` while `checks` stays absent. An observation whose head is no current
   head of a link of its receiver and repository is pruned 7 days after its last update by the
   hourly `integration.git-link-maintenance` job.
 - The first verified merge delivery of a link records its merge intent in the dispatch settlement

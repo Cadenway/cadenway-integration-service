@@ -1,5 +1,5 @@
 import type { DatabaseSchema, TenantTransactionRunner } from '@cadenway/nest-common/database';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import type { TaskGitLinkReader } from '../../../../../application/ports/outbound/persistence/links/task-git-link-reader.port.js';
 import type { TaskGitLink } from '../../../../../application/projections/links/task-git-link.projection.js';
@@ -46,7 +46,8 @@ export class DrizzleTaskGitLinkReader implements TaskGitLinkReader {
           .select()
           .from(gitLinks)
           .where(and(...predicates))
-          .orderBy(desc(gitLinks.createdAt), desc(gitLinks.id))
+          // The same order as git_links_task_page_index, so the page reads the index in order.
+          .orderBy(sql`${gitLinks.createdAt} desc nulls last`, sql`${gitLinks.id} desc nulls last`)
           .limit(input.limit);
         return rows.map(toTaskGitLink);
       },
@@ -83,7 +84,7 @@ function toTaskGitLink(row: Row): TaskGitLink {
     branch: identity.kind === 'branch' ? identity.ref : null,
     headSha: identity.kind === 'branch' ? null : row.headSha,
     checksCompletedAt:
-      identity.kind === 'branch' || row.checks === null || row.checksCompletedAtMs === null
+      identity.kind === 'branch' || row.checksCompletedAtMs === null
         ? null
         : new Date(row.checksCompletedAtMs).toISOString(),
     createdAt: row.createdAt.toISOString(),

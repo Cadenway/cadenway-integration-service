@@ -1454,8 +1454,8 @@ describe('integration-service wiring', () => {
           number: 31,
           providerRepositoryId: 91,
           headSha: 'b'.repeat(40),
-          // A completion recorded without an aggregate is not returned.
-          checksCompletedAt: null,
+          // A completion the previous release recorded is returned, without an aggregate.
+          checksCompletedAt: new Date(legacyHeadObservedAtMs + 60_000).toISOString(),
           version: 3,
         },
       ],

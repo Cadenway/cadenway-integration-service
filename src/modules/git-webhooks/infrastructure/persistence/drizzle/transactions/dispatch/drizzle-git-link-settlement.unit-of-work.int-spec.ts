@@ -35,6 +35,7 @@ import {
 import { GitHeadChecksJobsProducer } from '../../../../jobs/pg-boss/checks/git-head-checks.adapter.js';
 import { GitDispatchJobsProducer } from '../../../../jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 import { DrizzleGitHeadChecksUnitOfWork } from '../checks/drizzle-git-head-checks.unit-of-work.js';
+import { finishGitLinkProjectionMigration } from '../links/finish-git-link-projection.unit-of-work.js';
 import type { GitDispatchClaim } from '../../../../../application/models/dispatch/git-dispatch-claim.model.js';
 import { GitMergeIntentJobsProducer } from '../../../../jobs/pg-boss/merges/git-merge-intent.adapter.js';
 import { GitLinkChangedOutbox } from '../../../../messaging/outbox/links/git-link-changed-outbox.adapter.js';
@@ -154,6 +155,13 @@ describe('Git link settlement, merge intents and the link read', () => {
     const migrator = new pg.Pool({ connectionString: migrationUrl });
     try {
       await migrate(drizzle({ client: migrator }), { migrationsFolder: resolve('migrations') });
+      // As src/migrate.ts: the git_links indexes are built after the Drizzle transaction.
+      const session = await migrator.connect();
+      try {
+        await finishGitLinkProjectionMigration(session);
+      } finally {
+        session.release();
+      }
       await provisionJobs({
         connection: { connectionString: migrationUrl },
         appRole: 'integration_app',
@@ -721,6 +729,26 @@ describe('Git link settlement, merge intents and the link read', () => {
     const second = await read({ createdAt: last.createdAt, id: last.id });
     expect(second.map((link) => link.number)).toEqual([301]);
     expect(await read(null, otherOrganizationId)).toEqual([]);
+    // The page reads git_links_task_page_index in its order, without a sort.
+    const plan = await inOrganization(() =>
+      runner.run(async ({ client }) => {
+        await client.query('set local enable_seqscan = off');
+        const explained = await client.query(
+          `explain (format json)
+           select * from git_links
+            where organization_id = $1 and task_key = $2
+              and (created_at, id) < ($3::timestamptz, $4::uuid)
+            order by created_at desc nulls last, id desc nulls last
+            limit 3`,
+          [organizationId, 'CAD-490', last.createdAt, last.id],
+        );
+        return JSON.stringify(
+          (explained.rows[0] as { readonly 'QUERY PLAN': unknown } | undefined)?.['QUERY PLAN'],
+        );
+      }),
+    );
+    expect(plan).toContain('git_links_task_page_index');
+    expect(plan).not.toContain('"Node Type":"Sort"');
     await query(`insert into git_purged_tasks (organization_id, task_key) values ($1, 'CAD-490')`, [
       organizationId,
     ]);
