@@ -94,6 +94,7 @@ function claim(
   return {
     organizationId,
     deliveryId: `019a7100-0000-7000-8000-${suffix}`,
+    admissionSequence: sequence,
     commandKey: `019a7200-0000-7000-8000-${suffix}`,
     taskKey,
     receiverRevision: 1,
@@ -481,6 +482,26 @@ describe('Git link settlement, merge intents and the link read', () => {
       { number: 402, checks: null, version: 1 },
     ]);
     expect((await facts('CAD-492')).map(({ name }) => name)).toContain('git.checks-completed.v1');
+  });
+
+  it('keeps same-second updates in admission order when they settle in reverse', async () => {
+    await settle(claim('CAD-493', 403, { trigger: 'pr_open', closingTaskKeys: [] }));
+    const update = (title: string) =>
+      claim('CAD-493', 403, {
+        trigger: 'pr_updated',
+        closingTaskKeys: [],
+        request: { state: { state: 'open', observedAtMs: T }, members: { title } },
+      });
+    const admittedFirst = update('Admitted first');
+    const admittedSecond = update('Admitted second');
+    // The Task call of the later admission returned first.
+    await settle(admittedSecond);
+    await settle(admittedFirst);
+    expect(
+      await query('select title, version::int as version from git_links where task_key = $1', [
+        'CAD-493',
+      ]),
+    ).toEqual([{ title: 'Admitted second', version: 2 }]);
   });
 
   it('pages a task links newest first within the organization and hides a purged task', async () => {

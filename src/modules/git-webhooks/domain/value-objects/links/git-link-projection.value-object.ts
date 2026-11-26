@@ -9,14 +9,19 @@ import type { GitLinkSource } from './git-link-source.value-object.js';
  */
 export interface GitLinkProjection {
   // #region Properties
-  /** Lifecycle, its strictly positive version and the provider time last applied to it. */
+  /**
+   * Lifecycle, its strictly positive version and the provider time last applied to it. Each
+   * watermark keeps the admission order of its delivery, which orders equal provider times.
+   */
   readonly status: 'created' | 'open' | 'closed' | 'merged';
   readonly version: number;
   readonly lifecycleObservedAtMs: number | null;
+  readonly lifecycleAdmissionSequence: number;
 
   /** Provider members and the provider time last applied to each of them. */
   readonly members: GitLinkMembers;
   readonly memberObservedAtMs: Readonly<Partial<Record<GitLinkMemberName, number>>>;
+  readonly memberAdmissionSequence: Readonly<Partial<Record<GitLinkMemberName, number>>>;
 
   /** Where the task key was found when the link was created. */
   readonly linkSource: GitLinkSource | null;
@@ -26,6 +31,7 @@ export interface GitLinkProjection {
     readonly sha: string;
     readonly firstObservedAtMs: number;
     readonly lastObservedAtMs: number;
+    readonly admissionSequence: number;
   } | null;
 
   /** Aggregate of the stored observations for the current head and its latest completion. */

@@ -119,6 +119,7 @@ describe('Git link delivery contribution', () => {
     expect(delivery).toEqual({
       kind: 'pull-request',
       creates: true,
+      admissionSequence: 0,
       lifecycle: { state: 'open', observedAtMs: head.observedAtMs },
       members: { title: 'feat(auth): unified SSO sign-in screen' },
       membersObservedAtMs: head.observedAtMs,

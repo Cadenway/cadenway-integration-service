@@ -66,7 +66,13 @@ export class DrizzleGitLinkSettlement {
       },
       fact,
     );
-    const link = await this.links.record(scope, identity, fact, claim.taskKey);
+    const link = await this.links.record(
+      scope,
+      identity,
+      fact,
+      claim.taskKey,
+      claim.admissionSequence,
+    );
     if (link === null) return;
     for (const event of link.events) {
       await this.outbox.append(scope, {

@@ -46,7 +46,18 @@ export function gitLinkIdentity(scope: LinkScope, reference: LinkReference): Git
  * GitLab merge request pipeline and the request snapshot report the request's current state,
  * which realigns the link ("Reconciliation", Integration AsyncAPI).
  */
-export function gitLinkDeliveryOf(reference: LinkReference, taskKey: string): GitLinkDelivery {
+export function gitLinkDeliveryOf(
+  reference: LinkReference,
+  taskKey: string,
+  admissionSequence = 0,
+): GitLinkDelivery {
+  return { ...contribution(reference, taskKey), admissionSequence };
+}
+
+function contribution(
+  reference: LinkReference,
+  taskKey: string,
+): Omit<GitLinkDelivery, 'admissionSequence'> {
   const linkSource = reference.linkSources?.[taskKey] ?? null;
   if (reference.trigger === 'branch') {
     return {

@@ -19,6 +19,7 @@ const mappingAuthorUserId = '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e04';
 const claim: GitDispatchClaim = {
   organizationId,
   deliveryId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e08',
+  admissionSequence: 1,
   commandKey: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e05',
   taskKey: 'CAD-482',
   receiverRevision: 1,

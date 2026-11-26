@@ -9,6 +9,9 @@ export interface GitLinkDelivery {
   readonly kind: 'branch' | 'pull-request';
   readonly creates: boolean;
 
+  /** Admission order of the delivery, which breaks ties between equal provider times. */
+  readonly admissionSequence: number;
+
   /** Lifecycle the delivery carries for a request, with its provider time. */
   readonly lifecycle: VerifiedGitRequestState | null;
 

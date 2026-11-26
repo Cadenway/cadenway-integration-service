@@ -38,6 +38,10 @@ const GITHUB_UPDATES = new Set([
   'review_request_removed',
 ]);
 
+// Lifecycle actions are only trusted when their payload agrees with them.
+const GITHUB_LIFECYCLE = new Set(['opened', 'reopened', 'closed']);
+const GITLAB_LIFECYCLE = new Set(['open', 'reopen', 'merge', 'close']);
+
 /**
  * Reads automation facts from a JSON body already verified with the receiver's signing key.
  *
@@ -90,7 +94,9 @@ function readGitHubDelivery(delivery: JsonObject, repositoryId: number): Verifie
   ) {
     const sender = githubAuthor(delivery.sender);
     const url =
-      repository === undefined ? undefined : webUrl(`${repository.url}/tree/${delivery.ref}`);
+      repository === undefined
+        ? undefined
+        : webUrl(`${repository.url}/tree/${branchPath(delivery.ref)}`);
     return readTaskReferences(
       {
         trigger: 'branch',
@@ -120,8 +126,11 @@ function readGitHubDelivery(delivery: JsonObject, repositoryId: number): Verifie
   const open = request.state === 'open' && (request.merged === false || request.merged === null);
   if (delivery.action === 'synchronize') {
     // GitHub's synchronize event includes the old and new revision of the PR head.
-    if (!open || delivery.after !== currentHead?.sha) return { kind: 'ignored' };
-    return observeRequestUpdate(requestNumber, currentHead, snapshot, delivery.before);
+    if (open && delivery.after === currentHead?.sha) {
+      const update = observeRequestUpdate(requestNumber, currentHead, snapshot, delivery.before);
+      if (update.kind !== 'ignored') return update;
+    }
+    return observeRequestState(requestNumber, snapshot);
   }
   if (typeof delivery.action === 'string' && GITHUB_UPDATES.has(delivery.action)) {
     return observeRequestUpdate(requestNumber, currentHead, snapshot);
@@ -136,7 +145,11 @@ function readGitHubDelivery(delivery: JsonObject, repositoryId: number): Verifie
     request.state === 'closed' &&
     typeof request.merged === 'boolean';
   if (!opened && !reopened && !closed) {
-    return { kind: 'ignored' };
+    // A lifecycle action that contradicts its own payload is not trusted; any other action
+    // still reports the request's current state.
+    return typeof delivery.action === 'string' && GITHUB_LIFECYCLE.has(delivery.action)
+      ? { kind: 'ignored' }
+      : observeRequestState(requestNumber, snapshot);
   }
 
   const trigger = opened
@@ -182,7 +195,8 @@ function readGitLabDelivery(delivery: JsonObject, repositoryId: number): Verifie
 
     const branch = ref.slice(BRANCH_REF_PREFIX.length);
     const author = providerAuthor(delivery.user_username, delivery.user_name);
-    const url = project === undefined ? undefined : webUrl(`${project.url}/-/tree/${branch}`);
+    const url =
+      project === undefined ? undefined : webUrl(`${project.url}/-/tree/${branchPath(branch)}`);
     return readTaskReferences(
       { trigger: 'branch', branch, members: compact({ repository: project, url, author }) },
       [
@@ -214,10 +228,11 @@ function readGitLabDelivery(delivery: JsonObject, repositoryId: number): Verifie
   const snapshot = gitlabSnapshot(delivery, request, project);
   if (request.action === 'update') {
     // GitLab includes oldrev on MR updates caused by actual changes to source code.
-    if (request.oldrev !== undefined) {
-      return observeRequestUpdate(requestNumber, currentHead, snapshot, request.oldrev);
+    if (request.oldrev === undefined) {
+      return observeRequestUpdate(requestNumber, currentHead, snapshot);
     }
-    return observeRequestUpdate(requestNumber, currentHead, snapshot);
+    const update = observeRequestUpdate(requestNumber, currentHead, snapshot, request.oldrev);
+    return update.kind === 'ignored' ? observeRequestState(requestNumber, snapshot) : update;
   }
 
   const opened = request.action === 'open' && request.state === 'opened';
@@ -225,7 +240,9 @@ function readGitLabDelivery(delivery: JsonObject, repositoryId: number): Verifie
   const merged = request.action === 'merge' && request.state === 'merged';
   const closed = request.action === 'close' && request.state === 'closed';
   if (!opened && !reopened && !merged && !closed) {
-    return { kind: 'ignored' };
+    return typeof request.action === 'string' && GITLAB_LIFECYCLE.has(request.action)
+      ? { kind: 'ignored' }
+      : observeRequestState(requestNumber, snapshot);
   }
 
   const trigger = opened
@@ -348,6 +365,22 @@ function observeRequestUpdate(
     taskKeys: [],
     closingTaskKeys: [],
   };
+}
+
+/**
+ * Reports the request's current state and members for existing links, without a head or task
+ * discovery: any request action realigns the lifecycle ("Reconciliation", Integration AsyncAPI).
+ */
+function observeRequestState(
+  requestNumber: number,
+  request: VerifiedGitRequestSnapshot | undefined,
+): VerifiedGitDelivery {
+  return observeRequestUpdate(requestNumber, undefined, request);
+}
+
+/** Encodes each segment of a branch name for a web address, keeping its slashes. */
+function branchPath(branch: string): string {
+  return branch.split('/').map(encodeURIComponent).join('/');
 }
 
 function readTaskReferences(

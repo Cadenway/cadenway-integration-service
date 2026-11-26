@@ -134,16 +134,35 @@ describe('readVerifiedGitDelivery', () => {
   });
 
   it.each([
-    { ...githubSync, before: '0'.repeat(40) },
-    { ...githubSync, before: observedHead },
-    { ...githubSync, after: previousHead },
+    [{ ...githubSync, before: '0'.repeat(40) }, 'open'],
+    [{ ...githubSync, before: observedHead }, 'open'],
+    [{ ...githubSync, after: previousHead }, 'open'],
+    [{ ...githubSync, pull_request: { ...githubSync.pull_request, state: 'closed' } }, 'closed'],
+    [
+      {
+        ...githubSync,
+        pull_request: { ...githubSync.pull_request, state: 'closed', merged: true },
+      },
+      'merged',
+    ],
+  ] as const)(
+    'keeps only the request state of a GitHub synchronize without head evidence (%#)',
+    (body, state) => {
+      const fact = readVerifiedGitDelivery(githubBinding, body);
+      expect(fact).toMatchObject({
+        kind: 'actionable',
+        trigger: 'pr_updated',
+        taskKeys: [],
+        request: { state: { state } },
+      });
+      expect(fact).not.toHaveProperty('head');
+    },
+  );
+
+  it.each([
     {
       ...githubSync,
       pull_request: { ...githubSync.pull_request, updated_at: '2026-02-30T20:18:44Z' },
-    },
-    {
-      ...githubSync,
-      pull_request: { ...githubSync.pull_request, state: 'closed' },
     },
     {
       ...githubSync,
@@ -152,8 +171,38 @@ describe('readVerifiedGitDelivery', () => {
         head: { ...githubSync.pull_request.head, repo: { id: 502 } },
       },
     },
-  ])('ignores a GitHub synchronize with invalid revision evidence or repository', (body) => {
+  ])('ignores a GitHub synchronize without provider time or from another repository', (body) => {
     expect(readVerifiedGitDelivery(githubBinding, body)).toEqual({ kind: 'ignored' });
+  });
+
+  it.each(['labeled', 'assigned', 'locked', 'milestoned', 'auto_merge_enabled', 'enqueued'])(
+    'realigns from the request state of a GitHub %s action without a head or Task status',
+    (action) => {
+      const fact = readVerifiedGitDelivery(githubBinding, {
+        ...githubSync,
+        action,
+        pull_request: { ...githubSync.pull_request, state: 'closed', merged: true },
+      });
+      expect(fact).toMatchObject({
+        trigger: 'pr_updated',
+        taskKeys: [],
+        closingTaskKeys: [],
+        request: { state: { state: 'merged' } },
+      });
+      expect(fact).not.toHaveProperty('head');
+    },
+  );
+
+  it('encodes branch segments in the GitHub branch address', () => {
+    expect(
+      readVerifiedGitDelivery(githubBinding, {
+        ...githubCreate,
+        ref: 'cad-482/fix#login?',
+        repository: { ...githubRepository, html_url: 'https://github.com/atelier-nord/web' },
+      }),
+    ).toMatchObject({
+      members: { url: 'https://github.com/atelier-nord/web/tree/cad-482/fix%23login%3F' },
+    });
   });
 
   it('recognizes an opened GitHub PR while its merge flag is unavailable', () => {
@@ -346,23 +395,58 @@ describe('readVerifiedGitDelivery', () => {
     });
   });
 
+  it.each([{ oldrev: observedHead }, { last_commit: { id: '0'.repeat(40) } }])(
+    'keeps only the request state of a GitLab update with contradictory revision evidence',
+    (overrides) => {
+      const fact = readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabUpdate,
+        object_attributes: { ...gitlabUpdate.object_attributes, ...overrides },
+      });
+      expect(fact).toMatchObject({ trigger: 'pr_updated', request: { state: { state: 'open' } } });
+      expect(fact).not.toHaveProperty('head');
+    },
+  );
+
+  it.each(['approved', 'unapproved', 'approval', 'unapproval'])(
+    'realigns from the request state of a GitLab %s action without a head or Task status',
+    (action) => {
+      const fact = readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabUpdate,
+        object_attributes: { ...gitlabUpdate.object_attributes, action, state: 'merged' },
+      });
+      expect(fact).toMatchObject({
+        trigger: 'pr_updated',
+        taskKeys: [],
+        request: { state: { state: 'merged' } },
+      });
+      expect(fact).not.toHaveProperty('head');
+    },
+  );
+
+  it('encodes branch segments in the GitLab branch address', () => {
+    expect(
+      readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabNewBranch,
+        ref: 'refs/heads/cad-479/limite#debit',
+        project: { ...gitlabProject, web_url: 'https://gitlab.example/atelier-nord/auth' },
+      }),
+    ).toMatchObject({
+      members: { url: 'https://gitlab.example/atelier-nord/auth/-/tree/cad-479/limite%23debit' },
+    });
+  });
+
   it.each([
-    { oldrev: observedHead },
-    { last_commit: { id: '0'.repeat(40) } },
     { updated_at: undefined },
     { updated_at: '2026-11-08T20:18:44' },
     { target_project_id: 702 },
-  ])(
-    'ignores a GitLab MR update with contradictory revision, time or project evidence',
-    (overrides) => {
-      expect(
-        readVerifiedGitDelivery(gitlabBinding, {
-          ...gitlabUpdate,
-          object_attributes: { ...gitlabUpdate.object_attributes, ...overrides },
-        }),
-      ).toEqual({ kind: 'ignored' });
-    },
-  );
+  ])('ignores a GitLab MR update without provider time or from another project', (overrides) => {
+    expect(
+      readVerifiedGitDelivery(gitlabBinding, {
+        ...gitlabUpdate,
+        object_attributes: { ...gitlabUpdate.object_attributes, ...overrides },
+      }),
+    ).toEqual({ kind: 'ignored' });
+  });
 
   it('recognizes a GitLab close in the same project and drops closing intent', () => {
     expect(

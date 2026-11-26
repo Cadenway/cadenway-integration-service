@@ -6,6 +6,7 @@ import {
   index,
   jsonb,
   pgPolicy,
+  pgSequence,
   pgTable,
   primaryKey,
   text,
@@ -17,6 +18,12 @@ import {
 import type { GitDeliveryMapping } from '../../../../../application/models/deliveries/git-delivery-mapping.model.js';
 import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/deliveries/verified-git-delivery.value-object.js';
 import { gitWebhookReceivers } from './git-webhook-receivers.schema.js';
+
+/**
+ * Admission order of deliveries. Admission holds the receiver lock when it draws a value, so
+ * the order of a receiver's receipts is the order its deliveries were admitted in.
+ */
+export const gitWebhookAdmissionSequence = pgSequence('git_webhook_admission_sequence');
 
 /** A verified provider delivery and its immutable, bounded work description. */
 export const gitWebhookDeliveries = pgTable(
@@ -30,6 +37,8 @@ export const gitWebhookDeliveries = pgTable(
     provider: text('provider').$type<'github' | 'gitlab'>().notNull(),
     receiverRevision: bigint('receiver_revision', { mode: 'number' }),
     digest: text('digest').notNull(),
+    /** Admission order, null for receipts admitted before it was recorded. */
+    admissionSequence: bigint('admission_sequence', { mode: 'number' }),
     work: jsonb('work').$type<{
       readonly mapping: GitDeliveryMapping;
       readonly fact: Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;

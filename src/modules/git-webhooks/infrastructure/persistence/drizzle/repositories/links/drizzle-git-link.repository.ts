@@ -170,6 +170,7 @@ export class DrizzleGitLinkRepository {
     identity: GitLinkIdentity,
     fact: GitLinkFact,
     taskKey: string,
+    admissionSequence = 0,
   ): Promise<{
     readonly id: string;
     readonly events: readonly GitLinkChanged[];
@@ -217,7 +218,7 @@ export class DrizzleGitLinkRepository {
       throw new Error('The verified checks do not match the Git request identity.');
     }
 
-    const delivery = gitLinkDeliveryOf(fact, taskKey);
+    const delivery = gitLinkDeliveryOf(fact, taskKey, admissionSequence);
     const heads = new Set<string>();
     if (delivery.head !== null) heads.add(delivery.head.sha);
     if (current?.headSha !== null && current?.headSha !== undefined) heads.add(current.headSha);
@@ -358,8 +359,10 @@ function toProjection(row: Row): GitLinkProjection {
     status: row.status,
     version: row.version,
     lifecycleObservedAtMs: row.lifecycleObservedAtMs,
+    lifecycleAdmissionSequence: row.lifecycleAdmissionSequence ?? 0,
     members: Object.fromEntries(Object.entries(members).filter(([, value]) => value !== null)),
     memberObservedAtMs: row.memberObservedAtMs,
+    memberAdmissionSequence: row.memberAdmissionSequence,
     linkSource: row.linkSource,
     head:
       row.headSha === null ||
@@ -370,6 +373,7 @@ function toProjection(row: Row): GitLinkProjection {
             sha: row.headSha,
             firstObservedAtMs: row.headFirstObservedAtMs,
             lastObservedAtMs: row.headLastObservedAtMs,
+            admissionSequence: row.headAdmissionSequence ?? 0,
           },
     checks: row.checks,
     checksCompletedAtMs: row.checksCompletedAtMs,
@@ -386,6 +390,7 @@ function toColumns(
     status: projection.status,
     version: projection.version,
     lifecycleObservedAtMs: projection.lifecycleObservedAtMs,
+    lifecycleAdmissionSequence: projection.lifecycleAdmissionSequence,
     title: members.title ?? null,
     draft: members.draft ?? null,
     url: members.url ?? null,
@@ -397,9 +402,11 @@ function toColumns(
     deletions: members.deletions ?? null,
     linkSource: projection.linkSource,
     memberObservedAtMs: projection.memberObservedAtMs,
+    memberAdmissionSequence: projection.memberAdmissionSequence,
     headSha: projection.head?.sha ?? null,
     headFirstObservedAtMs: projection.head?.firstObservedAtMs ?? null,
     headLastObservedAtMs: projection.head?.lastObservedAtMs ?? null,
+    headAdmissionSequence: projection.head?.admissionSequence ?? null,
     checksAttemptId: null,
     checks: projection.checks,
     checksCompletedAtMs: projection.checksCompletedAtMs,

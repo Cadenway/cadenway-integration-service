@@ -15,6 +15,7 @@ function request(overrides: Partial<GitLinkDelivery> = {}): GitLinkDelivery {
   return {
     kind: 'pull-request',
     creates: false,
+    admissionSequence: 0,
     lifecycle: null,
     members: {},
     membersObservedAtMs: null,
@@ -99,7 +100,10 @@ function replay(
 ): { readonly projection: GitLinkProjection | null; readonly facts: string[] } {
   let projection: GitLinkProjection | null = null;
   const facts: string[] = [];
-  for (const delivery of deliveries) {
+  for (const [index, arrived] of deliveries.entries()) {
+    // Unless a test sets it, deliveries are admitted in the order they arrive.
+    const delivery =
+      arrived.admissionSequence === 0 ? { ...arrived, admissionSequence: index + 1 } : arrived;
     const decision = decideGitLinkUpdate(projection, delivery, (sha) =>
       evidence(observations[sha] ?? []),
     );
@@ -211,6 +215,57 @@ describe('Git link ordering and reconciliation', () => {
       'v3 link-updated title',
     ]);
     expect(projection).toMatchObject({ status: 'merged', reconciliationPending: false });
+  });
+});
+
+describe('Git link admission order', () => {
+  it('keeps two same-second updates in admission order when their Task calls finish reversed', () => {
+    const update = (sequence: number, title: string, sha: string): GitLinkDelivery =>
+      request({
+        admissionSequence: sequence,
+        members: { title },
+        membersObservedAtMs: T,
+        head: { sha, observedAtMs: T },
+      });
+    const { projection, facts } = replay([
+      { ...opening, admissionSequence: 1 },
+      update(3, 'Admitted second', headB),
+      update(2, 'Admitted first', headA),
+    ]);
+    expect(facts).toEqual(['v1 pull-request-opened', 'v2 link-updated title,headSha']);
+    expect(projection).toMatchObject({
+      members: { title: 'Admitted second' },
+      head: { sha: headB, admissionSequence: 3 },
+    });
+  });
+
+  it('keeps a reopen admitted after an equal-time close that settles later, and marks the tie', () => {
+    const { projection, facts } = replay([
+      { ...opening, admissionSequence: 1 },
+      { ...close(T - 1_000), admissionSequence: 2 },
+      { ...reopen(T), admissionSequence: 4 },
+      { ...close(T), admissionSequence: 3 },
+    ]);
+    expect(facts).toEqual([
+      'v1 pull-request-opened',
+      'v2 pull-request-closed',
+      'v3 pull-request-reopened',
+    ]);
+    expect(projection).toMatchObject({
+      status: 'open',
+      lifecycleAdmissionSequence: 4,
+      reconciliationPending: true,
+    });
+  });
+
+  it('ignores the same delivery settled twice', () => {
+    const { projection, facts } = replay([
+      { ...opening, admissionSequence: 1 },
+      { ...close(T), admissionSequence: 2 },
+      { ...close(T), admissionSequence: 2 },
+    ]);
+    expect(facts).toHaveLength(2);
+    expect(projection?.reconciliationPending).toBe(false);
   });
 });
 

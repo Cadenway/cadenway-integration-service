@@ -295,6 +295,7 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
     return {
       organizationId: row.organizationId,
       deliveryId: row.deliveryId,
+      admissionSequence: delivery.admissionSequence ?? 0,
       commandKey: row.id,
       taskKey: row.taskKey,
       receiverRevision: delivery.receiverRevision,

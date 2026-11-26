@@ -1,5 +1,5 @@
 {
-  "id": "3568cd10-9706-41a2-8742-2df2e6d406fb",
+  "id": "5ef90bbb-7185-4d36-8b10-fc987d76e9f7",
   "prevId": "41e9d3d4-c4d2-4e43-9348-534b43fbbc45",
   "version": "7",
   "dialect": "postgresql",
@@ -468,6 +468,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "admission_sequence": {
+          "name": "admission_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         },
         "work": {
           "name": "work",
@@ -1152,6 +1158,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "lifecycle_admission_sequence": {
+          "name": "lifecycle_admission_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "head_admission_sequence": {
+          "name": "head_admission_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
         "title": {
           "name": "title",
           "type": "text",
@@ -1214,6 +1232,13 @@
         },
         "member_observed_at_ms": {
           "name": "member_observed_at_ms",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "member_admission_sequence": {
+          "name": "member_admission_sequence",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
@@ -2179,7 +2204,18 @@
   },
   "enums": {},
   "schemas": {},
-  "sequences": {},
+  "sequences": {
+    "public.git_webhook_admission_sequence": {
+      "name": "git_webhook_admission_sequence",
+      "schema": "public",
+      "increment": "1",
+      "startWith": "1",
+      "minValue": "1",
+      "maxValue": "9223372036854775807",
+      "cache": "1",
+      "cycle": false
+    }
+  },
   "roles": {},
   "policies": {},
   "views": {},

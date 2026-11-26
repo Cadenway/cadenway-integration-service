@@ -50,6 +50,8 @@ export const gitLinks = pgTable(
     checksCompletedAtMs: bigint('checks_completed_at_ms', { mode: 'number' }),
     checks: jsonb('checks').$type<GitChecksAggregate>(),
     lifecycleObservedAtMs: bigint('lifecycle_observed_at_ms', { mode: 'number' }),
+    lifecycleAdmissionSequence: bigint('lifecycle_admission_sequence', { mode: 'number' }),
+    headAdmissionSequence: bigint('head_admission_sequence', { mode: 'number' }),
     title: text('title'),
     draft: boolean('draft'),
     url: text('url'),
@@ -61,6 +63,10 @@ export const gitLinks = pgTable(
     deletions: bigint('deletions', { mode: 'number' }),
     linkSource: text('link_source').$type<GitLinkSource>(),
     memberObservedAtMs: jsonb('member_observed_at_ms')
+      .$type<Partial<Record<GitLinkMemberName, number>>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    memberAdmissionSequence: jsonb('member_admission_sequence')
       .$type<Partial<Record<GitLinkMemberName, number>>>()
       .notNull()
       .default(sql`'{}'::jsonb`),

@@ -13,6 +13,7 @@ const input = {
 const claim = {
   organizationId: input.organizationId,
   deliveryId: input.deliveryId,
+  admissionSequence: 1,
   commandKey: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e04',
   taskKey: input.taskKey,
   receiverRevision: 2,

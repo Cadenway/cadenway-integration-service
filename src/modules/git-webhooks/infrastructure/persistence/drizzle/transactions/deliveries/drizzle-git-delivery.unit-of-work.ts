@@ -193,6 +193,8 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
         provider: this.provider,
         receiverRevision: this.receiverRevision,
         digest: input.digest,
+        // Drawn under the receiver lock, so it follows the admission order of the receiver.
+        admissionSequence: sql`nextval('git_webhook_admission_sequence')`,
         work,
       })
       .returning({ id: gitWebhookDeliveries.id });

@@ -369,9 +369,14 @@ describe('Git link persistence', () => {
       request: at('open', T - 1_000),
     } as const;
     const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, opened);
-    const record = (fact: Parameters<DrizzleGitLinkRepository['record']>[2]) =>
+    // Each delivery is admitted after the previous one.
+    let admitted = 0;
+    const record = (
+      fact: Parameters<DrizzleGitLinkRepository['record']>[2],
+      admissionSequence = ++admitted,
+    ) =>
       runWithOrganizationContext(context, () =>
-        runner.run((scope) => links.record(scope, identity, fact, 'CAD-486')),
+        runner.run((scope) => links.record(scope, identity, fact, 'CAD-486', admissionSequence)),
       );
     const marked = () =>
       runWithOrganizationContext(context, () =>
