@@ -24,7 +24,8 @@ const lifecycleFacts = {
  * - The lifecycle and every other member keep their own provider-time watermark. An older
  *   delivery is ignored for that member; an equal one is applied in admission order, which the
  *   watermark keeps, even when the Task call lets a later-admitted delivery settle first.
- * - `merged` is final: a verified merge supersedes `closed` whatever its time, and nothing
+ * - `merged` is final: a verified merge action supersedes `closed` whatever its time, a
+ *   snapshot reporting `merged` is ordered like any other state, and nothing
  *   leaves `merged`. A delivery that reports another state realigns the lifecycle when it is
  *   not older than the last one applied. An equal-time delivery whose lifecycle differs marks
  *   the link for reconciliation, whether it is applied or ignored; a strictly newer delivery that
@@ -104,8 +105,8 @@ export function decideGitLinkUpdate(
       version: next(),
       changed: [...memberNames, ...checkNames],
     });
-  } else if (checkNames.length !== 0) {
-    // A lifecycle fact covers the other members of its delivery, not the aggregate.
+  } else if (checkNames.length !== 0 || headChanged) {
+    // A lifecycle fact covers the other members of its delivery, not a head change or checks.
     const changed = headChanged ? ['headSha', ...checkNames] : checkNames;
     changes.push({ type: 'link-updated', version: next(), changed });
   }
@@ -235,6 +236,9 @@ function applyLifecycle(
 } | null {
   const reported = delivery.lifecycle;
   if (reported === null) return null;
+  // Only a verified merge action is final whatever its time; a snapshot that reports `merged`
+  // follows the watermark like any other state.
+  const final = reported.state === 'merged' && delivery.verifiedMerge;
   const watermark = current.lifecycleObservedAtMs;
   const at = reported.observedAtMs;
   const differs = reported.state !== current.status;
@@ -246,9 +250,9 @@ function applyLifecycle(
     // Without a provider time a delivery can only fill a lifecycle that was never ordered.
     const fills = watermark === null && differs && current.status !== 'merged';
     return {
-      status: fills || reported.state === 'merged' ? reported.state : current.status,
+      status: fills || final ? reported.state : current.status,
       ...kept,
-      result: fills || (reported.state === 'merged' && differs) ? 'applied' : 'unchanged',
+      result: fills || (final && differs) ? 'applied' : 'unchanged',
       clears: false,
     };
   }
@@ -267,7 +271,7 @@ function applyLifecycle(
   if (current.status === 'merged') {
     return { status: 'merged', ...next, result: tie ? 'tie' : 'unchanged', clears };
   }
-  if (reported.state === 'merged') {
+  if (final) {
     return { status: 'merged', ...next, result: tie ? 'tie' : 'applied', clears };
   }
   if (advances && differs) {

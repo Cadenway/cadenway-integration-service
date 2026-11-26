@@ -86,6 +86,7 @@ describe('Git link delivery contribution', () => {
     });
     expect(gitLinkDeliveryOf(merged, 'CAD-482')).toMatchObject({
       creates: true,
+      verifiedMerge: true,
       lifecycle: { state: 'merged' },
     });
   });
@@ -121,6 +122,7 @@ describe('Git link delivery contribution', () => {
       creates: true,
       admissionSequence: 0,
       lifecycle: { state: 'open', observedAtMs: head.observedAtMs },
+      verifiedMerge: false,
       members: { title: 'feat(auth): unified SSO sign-in screen' },
       membersObservedAtMs: head.observedAtMs,
       head,

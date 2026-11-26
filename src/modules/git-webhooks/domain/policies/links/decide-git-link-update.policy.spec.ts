@@ -17,6 +17,7 @@ function request(overrides: Partial<GitLinkDelivery> = {}): GitLinkDelivery {
     creates: false,
     admissionSequence: 0,
     lifecycle: null,
+    verifiedMerge: false,
     members: {},
     membersObservedAtMs: null,
     head: null,
@@ -40,7 +41,7 @@ const close = (at: number): GitLinkDelivery =>
 const reopen = (at: number): GitLinkDelivery =>
   request({ lifecycle: { state: 'open', observedAtMs: at } });
 const merge = (at: number): GitLinkDelivery =>
-  request({ creates: true, lifecycle: { state: 'merged', observedAtMs: at } });
+  request({ creates: true, verifiedMerge: true, lifecycle: { state: 'merged', observedAtMs: at } });
 
 function suite(
   attemptId: number,
@@ -303,7 +304,16 @@ describe('Git link members', () => {
     expect(decision?.projection.memberObservedAtMs.draft).toBe(T);
   });
 
-  it('lets a lifecycle fact cover the other members of its delivery', () => {
+  it('orders a snapshot that reports merged like any other state', () => {
+    const snapshot = (at: number): GitLinkDelivery =>
+      request({ lifecycle: { state: 'merged', observedAtMs: at } });
+    const older = replay([opening, close(T), snapshot(T - 5_000)]);
+    expect(older.projection?.status).toBe('closed');
+    const newer = replay([opening, close(T), snapshot(T + 5_000)]);
+    expect(newer.facts.at(-1)).toBe('v3 pull-request-merged');
+  });
+
+  it('lets a lifecycle fact cover the other members of its delivery, apart from its head', () => {
     const { facts } = replay([
       opening,
       request({
@@ -313,7 +323,7 @@ describe('Git link members', () => {
         head: { sha: headB, observedAtMs: T },
       }),
     ]);
-    expect(facts.at(-1)).toBe('v2 pull-request-closed');
+    expect(facts.slice(1)).toEqual(['v2 pull-request-closed', 'v3 link-updated headSha']);
   });
 
   it('refuses a branch projection for a request delivery and an exhausted version', () => {

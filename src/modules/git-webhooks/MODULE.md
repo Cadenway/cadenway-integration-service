@@ -101,7 +101,9 @@ terminal task purges.
 - The lifecycle and every other projected member keep their own provider-time watermark with the
   admission sequence of its delivery, drawn under the receiver lock: an older delivery is ignored
   for that member, and an equal one is applied in admission order even when a later admission
-  settles first. `merged` is final and a verified merge supersedes `closed`. Any request action,
+  settles first. `merged` is final and a verified merge action supersedes `closed` whatever its
+  time, while a snapshot reporting `merged` follows the watermark. A lifecycle fact covers the
+  other members of its delivery, but a head or checks change also publishes `git.link-updated.v1`. Any request action,
   and a GitLab merge request pipeline, realigns the lifecycle from the reported state when it is not
   older, without a head or Task status when the action is not a lifecycle or head change. An
   equal-time delivery whose lifecycle differs marks the link `reconciliation pending`, and a

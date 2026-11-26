@@ -15,6 +15,9 @@ export interface GitLinkDelivery {
   /** Lifecycle the delivery carries for a request, with its provider time. */
   readonly lifecycle: VerifiedGitRequestState | null;
 
+  /** Whether the delivery is the verified merge action itself, final whatever its time. */
+  readonly verifiedMerge: boolean;
+
   /** Members the delivery carries and their provider time, null when it has none. */
   readonly members: GitLinkMembers;
   readonly membersObservedAtMs: number | null;
