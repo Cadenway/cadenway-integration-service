@@ -1,5 +1,5 @@
 {
-  "id": "8b5c3f71-5970-4367-aacb-d09334cf4a27",
+  "id": "36178006-f0b5-4b50-9ab3-e80de17e2d6d",
   "prevId": "41e9d3d4-c4d2-4e43-9348-534b43fbbc45",
   "version": "7",
   "dialect": "postgresql",
@@ -1690,6 +1690,13 @@
         },
         "attempts": {
           "name": "attempts",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "recoveries": {
+          "name": "recoveries",
           "type": "bigint",
           "primaryKey": false,
           "notNull": true,

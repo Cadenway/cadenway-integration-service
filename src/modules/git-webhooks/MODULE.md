@@ -128,7 +128,8 @@ terminal task purges.
   ambiguous answer with backoff from one minute to one hour under the same key, and stops resending
   once the next attempt would fall outside 24 hours of the earlier of the claim and the intent: the
   intent then stays `pending` and the maintenance reports it once. The maintenance also re-enqueues
-  an in-window pending intent untouched for two hours, whose job the queue exhausted. Task's
+  an in-window pending intent untouched for two hours, whose job the queue exhausted, under a
+  recovery occurrence it records on the intent and the same command key. Task's
   `applied` or `no_op` marks it `handled`; `task.not-found`, `task.trashed`, a reused key or an
   invalid request marks it `handled` with that reason. The intent and maintenance workers run
   whatever the link flags, as the link dispatch worker does.

@@ -35,6 +35,8 @@ export const gitMergeIntents = pgTable(
     disposition: text('disposition').$type<'applied' | 'no_op'>(),
     reason: text('reason'),
     attempts: bigint('attempts', { mode: 'number' }).notNull().default(0),
+    /** Recovery jobs the maintenance queued after the queue exhausted an attempt's job. */
+    recoveries: bigint('recoveries', { mode: 'number' }).notNull().default(0),
     /** Start of Task's receipt window: the earlier of the dispatch claim and the intent. */
     windowStartedAt: timestamp('window_started_at', { withTimezone: true, precision: 3 })
       .notNull()

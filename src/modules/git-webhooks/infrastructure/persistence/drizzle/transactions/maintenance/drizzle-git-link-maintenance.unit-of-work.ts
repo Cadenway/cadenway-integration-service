@@ -91,7 +91,7 @@ export class DrizzleGitLinkMaintenanceUnitOfWork implements GitLinkMaintenanceUn
   /**
    * Re-enqueues the next attempt of pending intents untouched for longer than any retry delay
    * while still inside the window, which happens once the queue exhausted its own retries.
-   * The occurrence key of the attempt keeps an attempt that is still queued from doubling.
+   * Each recovery has its own recorded occurrence, counted only once its job is queued.
    */
   public async resumePendingMergeIntents(limit: number): Promise<number> {
     const stranded = await this.runner.run(
@@ -129,17 +129,29 @@ export class DrizzleGitLinkMaintenanceUnitOfWork implements GitLinkMaintenanceUn
               eq(gitMergeIntents.linkId, intent.link_id),
             );
             const rows = await scope.db
-              .select({ status: gitMergeIntents.status, attempts: gitMergeIntents.attempts })
+              .select({
+                status: gitMergeIntents.status,
+                attempts: gitMergeIntents.attempts,
+                recoveries: gitMergeIntents.recoveries,
+              })
               .from(gitMergeIntents)
               .where(byLink)
               .limit(1)
               .for('update');
             const current = rows[0];
             if (current?.status !== 'pending') return;
-            await this.jobs.enqueue(scope, intent.link_id, current.attempts + 1);
+            // Same command key: the recovery only replaces the job the queue gave up on.
+            const recovery = current.recoveries + 1;
+            const queued = await this.jobs.enqueue(
+              scope,
+              intent.link_id,
+              current.attempts + 1,
+              undefined,
+              recovery,
+            );
             await scope.db
               .update(gitMergeIntents)
-              .set({ updatedAt: sql`now()` })
+              .set({ ...(queued ? { recoveries: recovery } : {}), updatedAt: sql`now()` })
               .where(byLink);
           }),
       );

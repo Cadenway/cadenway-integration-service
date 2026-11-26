@@ -42,6 +42,7 @@ CREATE TABLE "git_merge_intents" (
 	"disposition" text,
 	"reason" text,
 	"attempts" bigint DEFAULT 0 NOT NULL,
+	"recoveries" bigint DEFAULT 0 NOT NULL,
 	"window_started_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
 	"reported_at" timestamp (3) with time zone,
 	"created_at" timestamp (3) with time zone DEFAULT now() NOT NULL,

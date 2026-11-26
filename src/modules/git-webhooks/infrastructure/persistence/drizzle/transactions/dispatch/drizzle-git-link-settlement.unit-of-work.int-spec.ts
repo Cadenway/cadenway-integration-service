@@ -466,22 +466,52 @@ describe('Git link settlement, merge intents and the link read', () => {
     ).resolves.toEqual({ status: 'expired' });
   });
 
-  it('re-enqueues a pending intent whose submission job is gone', async () => {
-    await settle(claim('CAD-496', 406, { trigger: 'pr_merged' }));
-    const [created] = await intentOf('CAD-496');
+  it.each([
+    ['before its attempt was claimed', false],
+    ['after its attempt was claimed', true],
+  ])('recovers a pending intent whose job the queue exhausted %s', async (_moment, claimed) => {
+    const taskKey = claimed ? 'CAD-496' : 'CAD-499';
+    await settle(claim(taskKey, claimed ? 406 : 407, { trigger: 'pr_merged' }));
+    const [created] = await intentOf(taskKey);
     const linkId = created?.link_id ?? '';
-    await intents.prepare({ organizationId, linkId });
-    // The queue exhausted attempt 1 without a settlement.
+    if (claimed) await intents.prepare({ organizationId, linkId });
+    // The queue gave up on the job and retains its failed row under its occurrence key.
     await query(
-      `update git_merge_intents set updated_at = now() - interval '3 hours' where link_id = $1`,
-      [linkId],
+      `update pgboss.job set state = 'failed' where name = $1 and data -> 'payload' ->> 'linkId' = $2`,
+      [GIT_MERGE_INTENT_QUEUE.name, linkId],
     );
-    expect(await intentJobs(linkId)).toHaveLength(1);
-    await expect(maintenance.resumePendingMergeIntents(100)).resolves.toBeGreaterThanOrEqual(1);
-    expect(await intentJobs(linkId)).toHaveLength(2);
-    // A second pass right after finds the intent touched and enqueues nothing more.
+    const recover = async (): Promise<void> => {
+      await query(
+        `update git_merge_intents set updated_at = now() - interval '3 hours' where link_id = $1`,
+        [linkId],
+      );
+      await maintenance.resumePendingMergeIntents(100);
+    };
+    await recover();
+    const runnable = () =>
+      query<{ readonly count: number }>(
+        `select count(*)::int as count from pgboss.job
+            where name = $1 and data -> 'payload' ->> 'linkId' = $2 and state = 'created'`,
+        [GIT_MERGE_INTENT_QUEUE.name, linkId],
+      );
+    expect(await runnable()).toEqual([{ count: 1 }]);
+    const recorded = () =>
+      query(
+        'select recoveries::int as recoveries, command_key from git_merge_intents where link_id = $1',
+        [linkId],
+      );
+    expect(await recorded()).toEqual([{ recoveries: 1, command_key: created?.command_key }]);
+    // A pass right after finds the intent touched and queues nothing more.
     await maintenance.resumePendingMergeIntents(100);
-    expect(await intentJobs(linkId)).toHaveLength(2);
+    expect(await runnable()).toEqual([{ count: 1 }]);
+    // A later exhaustion gets a further recovery of its own.
+    await query(
+      `update pgboss.job set state = 'failed' where name = $1 and data -> 'payload' ->> 'linkId' = $2`,
+      [GIT_MERGE_INTENT_QUEUE.name, linkId],
+    );
+    await recover();
+    expect(await runnable()).toEqual([{ count: 1 }]);
+    expect(await recorded()).toEqual([{ recoveries: 2, command_key: created?.command_key }]);
   });
 
   it('refreshes the links of a head that a check suite names no request for', async () => {

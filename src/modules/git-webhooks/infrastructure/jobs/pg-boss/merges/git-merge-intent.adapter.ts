@@ -12,25 +12,33 @@ export class GitMergeIntentJobsProducer {
   // #endregion
 
   // #region Methods
-  /** Enqueues attempt `attempt` of the link's intent once, optionally from `startAfter`. */
+  /**
+   * Enqueues attempt `attempt` of the link's intent once, optionally from `startAfter`. A
+   * recovery has an occurrence of its own, since the exhausted job of the attempt is retained.
+   * Returns whether a runnable job was inserted.
+   */
   public async enqueue(
     scope: JobsTransaction,
     linkId: string,
     attempt: number,
     startAfter?: Date,
-  ): Promise<void> {
+    recovery?: number,
+  ): Promise<boolean> {
     if (scope.organizationId === null) {
       throw new Error('A merge intent job requires a tenant transaction.');
     }
-    await this.producer.enqueue(
+    const occurrence = `${linkId}:${String(attempt)}`;
+    const result = await this.producer.enqueue(
       scope,
       GIT_MERGE_INTENT_QUEUE.name,
       { linkId },
       {
-        occurrenceKey: `${linkId}:${String(attempt)}`,
+        occurrenceKey:
+          recovery === undefined ? occurrence : `${occurrence}:recovery:${String(recovery)}`,
         ...(startAfter === undefined ? {} : { startAfter }),
       },
     );
+    return !result.duplicate;
   }
   // #endregion
 }
