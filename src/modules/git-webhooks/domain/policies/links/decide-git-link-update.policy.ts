@@ -1,6 +1,6 @@
 import { InvalidGitLinkError } from '../../errors/links/invalid-git-link.error.js';
 import type { GitLinkChanged } from '../../events/links/git-link-changed.event.js';
-import type { GitCheckObservation } from '../../value-objects/checks/git-check-observation.value-object.js';
+import type { GitChecksEvidence } from '../../value-objects/checks/git-checks-evidence.value-object.js';
 import type { GitLinkDecision } from '../../value-objects/links/git-link-decision.value-object.js';
 import type { GitLinkDelivery } from '../../value-objects/links/git-link-delivery.value-object.js';
 import type { GitLinkMemberName } from '../../value-objects/links/git-link-member-name.value-object.js';
@@ -28,7 +28,7 @@ const lifecycleFacts = {
  *   not older than the last one applied. An equal-time delivery whose lifecycle differs marks
  *   the link for reconciliation, even when `merged` ignores it; a strictly newer delivery that
  *   carries the state clears the mark.
- * - Checks are the aggregate of `observationsOf(headSha)` for the current head, recomputed on
+ * - Checks are the aggregate of `evidenceOf(headSha)` for the current head, recomputed on
  *   creation, on a head change and on a check observation of that head.
  * - Every committed change takes the next version and one fact: the lifecycle fact, the check
  *   completion, or `link-updated` naming the other changed members. A creation that finds
@@ -39,9 +39,9 @@ const lifecycleFacts = {
 export function decideGitLinkUpdate(
   current: GitLinkProjection | null,
   delivery: GitLinkDelivery,
-  observationsOf: (headSha: string) => readonly GitCheckObservation[],
+  evidenceOf: (headSha: string) => GitChecksEvidence | null,
 ): GitLinkDecision | null {
-  if (current === null) return delivery.creates ? create(delivery, observationsOf) : null;
+  if (current === null) return delivery.creates ? create(delivery, evidenceOf) : null;
   if ((current.status === 'created') !== (delivery.kind === 'branch')) {
     throw new InvalidGitLinkError();
   }
@@ -52,9 +52,23 @@ export function decideGitLinkUpdate(
   const head = applyHead(current, delivery);
   const headChanged = head.sha !== current.head?.sha;
   const recompute = head.sha !== undefined && (headChanged || delivery.checksHeadSha === head.sha);
-  const aggregate = recompute
-    ? aggregateGitChecks(observationsOf(head.sha))
-    : { checks: current.checks, completedAtMs: current.checksCompletedAtMs };
+  const evidence = recompute ? evidenceOf(head.sha) : null;
+  // A check receipt admitted by the previous release has no stored observation: it only
+  // advances the completion time, as that release did.
+  const legacy = delivery.legacyChecksCompletedAtMs;
+  const legacyCompletion =
+    recompute &&
+    !headChanged &&
+    evidence === null &&
+    legacy !== null &&
+    legacy > (current.checksCompletedAtMs ?? -1);
+  const aggregate = !recompute
+    ? { checks: current.checks, completedAtMs: current.checksCompletedAtMs }
+    : legacyCompletion
+      ? { checks: current.checks, completedAtMs: legacy }
+      : evidence === null && legacy !== null && !headChanged
+        ? { checks: current.checks, completedAtMs: current.checksCompletedAtMs }
+        : aggregateGitChecks(evidence);
   const checksChanged = !same(aggregate.checks, current.checks);
   const completedChanged = aggregate.completedAtMs !== current.checksCompletedAtMs;
 
@@ -81,7 +95,7 @@ export function decideGitLinkUpdate(
     aggregate.checks !== null &&
     aggregate.checks.state !== 'running' &&
     aggregate.checks.state !== current.checks?.state;
-  if (entersOutcome) {
+  if (entersOutcome || legacyCompletion) {
     changes.push({ type: 'checks-completed', version: next() });
   } else if (changes.length === 0 && memberNames.length + checkNames.length !== 0) {
     changes.push({
@@ -123,7 +137,7 @@ export function decideGitLinkUpdate(
 
 function create(
   delivery: GitLinkDelivery,
-  observationsOf: (headSha: string) => readonly GitCheckObservation[],
+  evidenceOf: (headSha: string) => GitChecksEvidence | null,
 ): GitLinkDecision {
   const state = delivery.lifecycle?.state;
   if (delivery.kind === 'pull-request' && state !== 'open' && state !== 'merged') {
@@ -147,7 +161,7 @@ function create(
   const aggregate =
     head === null
       ? { checks: null, completedAtMs: null }
-      : aggregateGitChecks(observationsOf(head.sha));
+      : aggregateGitChecks(evidenceOf(head.sha));
   const events: GitLinkChanged[] = [
     {
       type:

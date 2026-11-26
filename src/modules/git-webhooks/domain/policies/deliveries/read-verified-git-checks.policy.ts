@@ -153,13 +153,14 @@ function readGitLabPipeline(repositoryId: number, delivery: JsonObject): Verifie
     return null;
   }
 
-  // A running pipeline is ordered by its creation, a finished one by its completion.
+  const jobs = Array.isArray(delivery.builds) ? delivery.builds.map(asObject) : undefined;
+  // A finished pipeline is ordered by its completion. A running one keeps its ID when GitLab
+  // retries it, so it is ordered by the latest job time, which advances past that completion.
   const terminal = GITLAB_TERMINAL_STATUSES.has(status);
   const completedAtMs = terminal ? providerTime(pipeline.finished_at) : null;
-  const observedAtMs = terminal ? completedAtMs : providerTime(pipeline.created_at);
+  const observedAtMs = terminal ? completedAtMs : latestTime(pipeline.created_at, jobs ?? []);
   if (observedAtMs === null) return null;
 
-  const jobs = Array.isArray(delivery.builds) ? delivery.builds.map(asObject) : undefined;
   const observation: GitCheckObservation = {
     provider: 'gitlab',
     attemptId: pipeline.id,
@@ -209,4 +210,18 @@ function isRevision(value: unknown): value is string {
 
 function providerTime(value: unknown): number | null {
   return readProviderTime(value);
+}
+
+/** Latest of the pipeline creation and its jobs' creation, start and finish times. */
+function latestTime(createdAt: unknown, jobs: readonly (JsonObject | undefined)[]): number | null {
+  const created = providerTime(createdAt);
+  if (created === null) return null;
+  let latest = created;
+  for (const job of jobs) {
+    for (const time of [job?.created_at, job?.started_at, job?.finished_at]) {
+      const parsed = providerTime(time);
+      if (parsed !== null) latest = Math.max(latest, parsed);
+    }
+  }
+  return latest;
 }

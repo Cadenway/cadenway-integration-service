@@ -4,7 +4,11 @@ import type { GitLinkDelivery } from '../../value-objects/links/git-link-deliver
 import type { GitLinkIdentity } from '../../value-objects/links/git-link-identity.value-object.js';
 
 type LinkScope = Pick<GitLinkIdentity, 'organizationId' | 'receiverId' | 'binding' | 'taskId'>;
-type LinkReference = Extract<VerifiedGitDelivery, { kind: 'actionable' }>;
+/** A delivery about one link; `head_checks` is first split into one `pr_checks` per link. */
+type LinkReference = Exclude<
+  Extract<VerifiedGitDelivery, { kind: 'actionable' }>,
+  { trigger: 'head_checks' }
+>;
 
 const triggerStates = {
   pr_open: 'open',
@@ -53,6 +57,7 @@ export function gitLinkDeliveryOf(reference: LinkReference, taskKey: string): Gi
       membersObservedAtMs: null,
       head: null,
       checksHeadSha: null,
+      legacyChecksCompletedAtMs: null,
       linkSource,
     };
   }
@@ -65,6 +70,8 @@ export function gitLinkDeliveryOf(reference: LinkReference, taskKey: string): Gi
       membersObservedAtMs: null,
       head: null,
       checksHeadSha: reference.checks.headSha,
+      legacyChecksCompletedAtMs:
+        reference.checks.observed === true ? null : reference.checks.completedAtMs,
       linkSource: null,
     };
   }
@@ -77,6 +84,7 @@ export function gitLinkDeliveryOf(reference: LinkReference, taskKey: string): Gi
       membersObservedAtMs: null,
       head: reference.head,
       checksHeadSha: null,
+      legacyChecksCompletedAtMs: null,
       linkSource: null,
     };
   }
@@ -99,6 +107,7 @@ export function gitLinkDeliveryOf(reference: LinkReference, taskKey: string): Gi
     membersObservedAtMs: snapshot?.state.observedAtMs ?? null,
     head: reference.head ?? null,
     checksHeadSha: null,
+    legacyChecksCompletedAtMs: null,
     linkSource,
   };
 }

@@ -17,6 +17,8 @@ interface GitRequestHead {
  * These references still require current authorization in the space mapped to the receiver.
  * `linkSources` names where each task key was first found, for a link created by the delivery.
  * `pr_head` is the head-only observation admitted by earlier versions and still settled.
+ * `head_checks` refreshes the checks of existing links whose current head is a check suite's
+ * head when the provider names no single request for it.
  */
 export type VerifiedGitDelivery =
   | { readonly kind: 'ignored' | 'repository_mismatch' }
@@ -57,5 +59,15 @@ export type VerifiedGitDelivery =
           readonly head?: never;
           /** Request state a GitLab merge request pipeline reports, used to realign the link. */
           readonly requestState?: VerifiedGitRequestState;
+        }
+      | {
+          readonly trigger: 'head_checks';
+          readonly headSha: string;
+          /** Existing pull request links of each task whose recorded head was `headSha`. */
+          readonly targets: readonly {
+            readonly taskKey: string;
+            readonly requestNumber: number;
+          }[];
+          readonly checks: Omit<VerifiedGitChecksCorrelation, 'requestNumber'>;
         }
     ));

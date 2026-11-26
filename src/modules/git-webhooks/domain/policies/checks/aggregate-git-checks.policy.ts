@@ -1,5 +1,5 @@
-import type { GitCheckObservation } from '../../value-objects/checks/git-check-observation.value-object.js';
 import type { GitChecksAggregate } from '../../value-objects/checks/git-checks-aggregate.value-object.js';
+import type { GitChecksEvidence } from '../../value-objects/checks/git-checks-evidence.value-object.js';
 
 const GITHUB_FAILED = new Set([
   'failure',
@@ -21,49 +21,44 @@ const GITLAB_STATE = {
 } as const;
 
 /**
- * Computes the checks of one head from its stored observations (GitChecks and "Checks" in the
- * Integration contract). GitHub leaves out a `stale` suite and counts suites: `failed` when a
- * completed suite failed, else `running` while one has not completed, else `passed`. GitLab uses
- * the pipeline with the highest ID and counts its jobs. With no eligible observation the
- * aggregate is absent. The completion time is the latest provider completion among the
- * eligible observations.
+ * Computes the checks of one head from the evidence of its stored observations (GitChecks and
+ * "Checks" in the Integration contract). GitHub leaves out a `stale` suite and counts suites:
+ * `failed` when a completed suite failed, else `running` while one has not completed, else
+ * `passed`. GitLab uses the pipeline with the highest ID and counts its jobs. With no eligible
+ * observation the aggregate is absent. The completion time is the latest provider completion
+ * among the eligible observations.
  */
-export function aggregateGitChecks(observations: readonly GitCheckObservation[]): {
+export function aggregateGitChecks(evidence: GitChecksEvidence | null): {
   readonly checks: GitChecksAggregate | null;
   readonly completedAtMs: number | null;
 } {
-  const eligible = observations.filter(
-    (observation) => observation.provider !== 'github' || observation.conclusion !== 'stale',
-  );
-  let completedAtMs: number | null = null;
-  for (const observation of eligible) {
-    if (observation.completedAtMs !== null) {
-      completedAtMs = Math.max(completedAtMs ?? 0, observation.completedAtMs);
-    }
-  }
-  if (eligible.length === 0) return { checks: null, completedAtMs };
-
-  const latest = eligible.reduce((first, second) =>
-    second.attemptId > first.attemptId ? second : first,
-  );
-  if (latest.provider === 'gitlab') {
+  if (evidence === null) return { checks: null, completedAtMs: null };
+  if (evidence.provider === 'gitlab') {
+    const { latest } = evidence;
     const checks: GitChecksAggregate = {
       state: GITLAB_STATE[latest.status],
       ...(latest.jobTotal === undefined ? {} : { total: latest.jobTotal }),
       ...(latest.jobFailed === undefined ? {} : { failed: latest.jobFailed }),
     };
-    return { checks, completedAtMs };
+    return { checks, completedAtMs: evidence.completedAtMs };
   }
 
+  let total = 0;
   let failed = 0;
   let running = false;
-  for (const observation of eligible) {
-    if (observation.provider !== 'github') continue;
-    if (observation.status !== 'completed') running = true;
-    else if (observation.conclusion !== null && GITHUB_FAILED.has(observation.conclusion)) {
-      failed += 1;
+  let completedAtMs: number | null = null;
+  for (const suite of evidence.suites) {
+    if (suite.conclusion === 'stale' || suite.count < 1) continue;
+    total += suite.count;
+    if (suite.completedAtMs !== null) {
+      completedAtMs = Math.max(completedAtMs ?? 0, suite.completedAtMs);
+    }
+    if (suite.status !== 'completed') running = true;
+    else if (suite.conclusion !== null && GITHUB_FAILED.has(suite.conclusion)) {
+      failed += suite.count;
     }
   }
+  if (total === 0) return { checks: null, completedAtMs };
   const state = failed > 0 ? 'failed' : running ? 'running' : 'passed';
-  return { checks: { state, total: eligible.length, failed }, completedAtMs };
+  return { checks: { state, total, failed }, completedAtMs };
 }

@@ -32,6 +32,31 @@ export class DrizzleGitLinkSettlement {
     receiverId: string,
     placement: Exclude<GitTaskActionResult, { readonly disposition: 'unavailable' }>,
   ): Promise<void> {
+    const { fact } = claim;
+    if (fact.trigger === 'head_checks') {
+      // One check of a head refreshes each link of the task whose current head it is.
+      for (const target of fact.targets) {
+        if (target.taskKey !== claim.taskKey) continue;
+        const checks = { ...fact.checks, requestNumber: target.requestNumber };
+        await this.record(
+          scope,
+          {
+            ...claim,
+            fact: {
+              kind: 'actionable',
+              trigger: 'pr_checks',
+              requestNumber: target.requestNumber,
+              checks,
+              taskKeys: fact.taskKeys,
+              closingTaskKeys: [],
+            },
+          },
+          receiverId,
+          placement,
+        );
+      }
+      return;
+    }
     const identity = gitLinkIdentity(
       {
         organizationId: claim.organizationId,
@@ -39,9 +64,9 @@ export class DrizzleGitLinkSettlement {
         binding: claim.mapping.binding,
         taskId: placement.taskId,
       },
-      claim.fact,
+      fact,
     );
-    const link = await this.links.record(scope, identity, claim.fact, claim.taskKey);
+    const link = await this.links.record(scope, identity, fact, claim.taskKey);
     if (link === null) return;
     for (const event of link.events) {
       await this.outbox.append(scope, {
@@ -53,7 +78,7 @@ export class DrizzleGitLinkSettlement {
         placement,
       });
     }
-    if (claim.fact.trigger !== 'pr_merged') return;
+    if (fact.trigger !== 'pr_merged') return;
     const intent = await this.intents.recordFirst(scope, {
       organizationId: claim.organizationId,
       linkId: link.id,
@@ -61,7 +86,7 @@ export class DrizzleGitLinkSettlement {
       commandKey: claim.commandKey,
       taskKey: claim.taskKey,
       mapping: claim.mapping,
-      targetStatus: claim.fact.closingTaskKeys.includes(claim.taskKey) ? 'done' : null,
+      targetStatus: fact.closingTaskKeys.includes(claim.taskKey) ? 'done' : null,
       // A receipt from an earlier release sent its status with the dispatch Task just confirmed.
       ...(claim.mergeIntent ? {} : { confirmed: placement.disposition }),
     });

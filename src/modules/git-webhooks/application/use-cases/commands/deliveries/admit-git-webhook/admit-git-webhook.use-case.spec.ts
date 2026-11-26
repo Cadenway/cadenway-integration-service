@@ -54,6 +54,7 @@ function setup(): {
     findRequestTaskKeys: vi.fn().mockResolvedValue([]),
     findPendingRequestWork: vi.fn().mockResolvedValue([]),
     recordCheckObservation: vi.fn().mockResolvedValue(undefined),
+    findHeadTargets: vi.fn().mockResolvedValue([]),
     admit: vi.fn().mockResolvedValue('accepted'),
   };
   const work: GitDeliveryUnitOfWork = {
@@ -325,7 +326,13 @@ describe('AdmitGitWebhook', () => {
           requestNumber: 214,
           taskKeys: ['CAD-484'],
           closingTaskKeys: [],
-          checks: { requestNumber: 214, headSha, attemptId: 277, completedAtMs: Date.parse(when) },
+          checks: {
+            requestNumber: 214,
+            headSha,
+            attemptId: 277,
+            completedAtMs: Date.parse(when),
+            observed: true,
+          },
         }),
       },
     });
@@ -360,10 +367,47 @@ describe('AdmitGitWebhook', () => {
       expect.objectContaining({ attemptId: 278, headSha, status: 'queued', completedAtMs: null }),
     );
     expect(transaction.findRequestTaskKeys).not.toHaveBeenCalled();
+    expect(transaction.findHeadTargets).toHaveBeenCalledWith(mapping.binding, headSha);
     expect(transaction.admit).toHaveBeenCalledWith({
       deliveryId: input.deliveryId,
       digest: 'a'.repeat(64),
       work: null,
+    });
+
+    // Existing links whose current head is the suite's head are refreshed.
+    const targets = [
+      { taskKey: 'CAD-482', requestNumber: 214 },
+      { taskKey: 'CAD-482', requestNumber: 215 },
+      { taskKey: 'CAD-483', requestNumber: 215 },
+    ];
+    vi.mocked(transaction.findHeadTargets).mockResolvedValue(targets);
+    await expect(
+      command.execute({
+        ...input,
+        event: 'check_suite',
+        rawBody: new TextEncoder().encode(JSON.stringify(body)),
+      }),
+    ).resolves.toEqual({ status: 'accepted' });
+    expect(transaction.admit).toHaveBeenLastCalledWith({
+      deliveryId: input.deliveryId,
+      digest: 'a'.repeat(64),
+      work: {
+        mapping,
+        fact: {
+          kind: 'actionable',
+          trigger: 'head_checks',
+          headSha,
+          targets,
+          checks: {
+            headSha,
+            attemptId: 278,
+            completedAtMs: Date.parse('2026-11-08T20:18:44Z'),
+            observed: true,
+          },
+          taskKeys: ['CAD-482', 'CAD-483'],
+          closingTaskKeys: [],
+        },
+      },
     });
   });
 

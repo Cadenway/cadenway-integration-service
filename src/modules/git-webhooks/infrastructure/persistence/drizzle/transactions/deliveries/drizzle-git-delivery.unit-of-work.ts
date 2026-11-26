@@ -29,7 +29,10 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     private readonly provider: 'github' | 'gitlab',
     private readonly receiverRevision: number | null = null,
     private readonly jobs?: Pick<GitDispatchJobsProducer, 'enqueue'>,
-    private readonly links?: Pick<DrizzleGitLinkRepository, 'findRequestTaskKeys'>,
+    private readonly links?: Pick<
+      DrizzleGitLinkRepository,
+      'findRequestTaskKeys' | 'findHeadTargets'
+    >,
     private readonly observations?: Pick<DrizzleGitCheckObservationRepository, 'record'>,
   ) {}
   // #endregion
@@ -95,6 +98,20 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
       { organizationId: this.organizationId, receiverId: this.receiverId, binding, requestNumber },
       headSha,
     );
+  }
+
+  /** Resolves links by current head; disabled link producers admit no targets. */
+  public async findHeadTargets(
+    binding: GitRepositoryIdentity,
+    headSha: string,
+  ): ReturnType<GitDeliveryTransaction['findHeadTargets']> {
+    if (this.links === undefined || binding.provider !== this.provider) return [];
+    return await this.links.findHeadTargets(this.scope, {
+      organizationId: this.organizationId,
+      receiverId: this.receiverId,
+      binding,
+      headSha,
+    });
   }
 
   /** Finds accepted dependent work under the same receiver and mapping as the new observation. */

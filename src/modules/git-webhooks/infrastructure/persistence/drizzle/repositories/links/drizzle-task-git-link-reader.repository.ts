@@ -83,7 +83,7 @@ function toTaskGitLink(row: Row): TaskGitLink {
     branch: identity.kind === 'branch' ? identity.ref : null,
     headSha: identity.kind === 'branch' ? null : row.headSha,
     checksCompletedAt:
-      identity.kind === 'branch' || row.checksCompletedAtMs === null
+      identity.kind === 'branch' || row.checks === null || row.checksCompletedAtMs === null
         ? null
         : new Date(row.checksCompletedAtMs).toISOString(),
     createdAt: row.createdAt.toISOString(),

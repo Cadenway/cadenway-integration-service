@@ -124,6 +124,7 @@ describe('Git link delivery contribution', () => {
       membersObservedAtMs: head.observedAtMs,
       head,
       checksHeadSha: null,
+      legacyChecksCompletedAtMs: null,
       linkSource: 'title',
     });
   });

@@ -12,6 +12,7 @@ const statuses = {
   pr_updated: null,
   pr_head: null,
   pr_checks: null,
+  head_checks: null,
 } as const;
 
 /**

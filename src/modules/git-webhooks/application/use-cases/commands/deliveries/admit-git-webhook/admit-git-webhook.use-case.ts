@@ -66,7 +66,12 @@ export class AdmitGitWebhook {
       if (checks !== null) {
         await transaction.recordCheckObservation(mapping.binding, checks.observation);
       }
-      const work = fact.kind === 'actionable' ? await selectWork(transaction, mapping, fact) : null;
+      const work =
+        fact.kind === 'actionable'
+          ? await selectWork(transaction, mapping, fact)
+          : checks === null
+            ? null
+            : await selectHeadWork(transaction, mapping, checks);
       return transaction.admit({
         deliveryId,
         digest,
@@ -107,9 +112,42 @@ function readFact(
         headSha: observation.headSha,
         attemptId: observation.attemptId,
         completedAtMs: observation.observedAtMs,
+        observed: true,
       },
       ...(request.state === undefined ? {} : { requestState: request.state }),
       taskKeys: [],
+      closingTaskKeys: [],
+    },
+  };
+}
+
+/**
+ * Refreshes the checks of the existing links whose current head is the suite's head when the
+ * provider names no single request for it ("Checks", Integration AsyncAPI). Each link still
+ * needs Task's current placement and its head is checked again when the job settles.
+ */
+async function selectHeadWork(
+  transaction: GitDeliveryTransaction,
+  mapping: GitDeliveryMapping,
+  checks: VerifiedGitChecks,
+): Promise<Parameters<GitDeliveryTransaction['admit']>[0]['work']> {
+  const { observation } = checks;
+  const targets = await transaction.findHeadTargets(mapping.binding, observation.headSha);
+  if (targets === null || targets.length === 0) return null;
+  return {
+    mapping,
+    fact: {
+      kind: 'actionable',
+      trigger: 'head_checks',
+      headSha: observation.headSha,
+      targets,
+      checks: {
+        headSha: observation.headSha,
+        attemptId: observation.attemptId,
+        completedAtMs: observation.observedAtMs,
+        observed: true,
+      },
+      taskKeys: [...new Set(targets.map(({ taskKey }) => taskKey))],
       closingTaskKeys: [],
     },
   };
@@ -120,7 +158,7 @@ async function selectWork(
   mapping: GitDeliveryMapping,
   fact: Actionable,
 ): Promise<Parameters<GitDeliveryTransaction['admit']>[0]['work']> {
-  if (fact.trigger === 'branch' || fact.trigger === 'pr_open') {
+  if (fact.trigger === 'branch' || fact.trigger === 'pr_open' || fact.trigger === 'head_checks') {
     return { mapping, fact };
   }
   const taskKeys = await transaction.findRequestTaskKeys(
@@ -172,7 +210,7 @@ const eventNames = {
 function matchesEvent(input: AdmitGitWebhookInput, trigger: Actionable['trigger']): boolean {
   const events = eventNames[input.provider];
   if (trigger === 'branch') return input.event === events.branch;
-  if (trigger === 'pr_checks') return input.event === events.checks;
+  if (trigger === 'pr_checks' || trigger === 'head_checks') return input.event === events.checks;
   return input.event === events.request;
 }
 

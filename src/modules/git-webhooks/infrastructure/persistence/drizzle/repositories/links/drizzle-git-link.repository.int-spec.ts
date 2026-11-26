@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { gitLinkIdentity } from '../../../../../domain/policies/links/git-link-change.policy.js';
 import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/deliveries/verified-git-delivery.value-object.js';
 import type { GitCheckObservation } from '../../../../../domain/value-objects/checks/git-check-observation.value-object.js';
+import { aggregateGitChecks } from '../../../../../domain/policies/checks/aggregate-git-checks.policy.js';
 import { DrizzleGitCheckObservationRepository } from '../checks/drizzle-git-check-observation.repository.js';
 import { DrizzleGitLinkRepository } from './drizzle-git-link.repository.js';
 
@@ -22,6 +23,7 @@ const organizationId = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e10';
 const otherOrganizationId = '01938f6e-0000-7000-8000-000000000002';
 const receiverId = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e01';
 const otherReceiverId = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e02';
+const gitlabReceiverId = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e05';
 const taskId = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e03';
 const actor = '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c24';
 const binding = { provider: 'github' as const, repositoryId: 81, installationId: 41 };
@@ -97,7 +99,7 @@ describe('Git link persistence', () => {
       scopes: [],
     };
     const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, request);
-    const record = (fact: Extract<VerifiedGitDelivery, { kind: 'actionable' }>) =>
+    const record = (fact: Parameters<DrizzleGitLinkRepository['record']>[2]) =>
       runWithOrganizationContext(context, () =>
         runner.run(async (scope) => {
           await scope.client.query(
@@ -280,7 +282,7 @@ describe('Git link persistence', () => {
           ),
         ),
       );
-    const record = (fact: Extract<VerifiedGitDelivery, { kind: 'actionable' }>) =>
+    const record = (fact: Parameters<DrizzleGitLinkRepository['record']>[2]) =>
       runWithOrganizationContext(context, () =>
         runner.run((scope) => links.record(scope, identity, fact, 'CAD-485')),
       );
@@ -367,7 +369,7 @@ describe('Git link persistence', () => {
       request: at('open', T - 1_000),
     } as const;
     const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, opened);
-    const record = (fact: Extract<VerifiedGitDelivery, { kind: 'actionable' }>) =>
+    const record = (fact: Parameters<DrizzleGitLinkRepository['record']>[2]) =>
       runWithOrganizationContext(context, () =>
         runner.run((scope) => links.record(scope, identity, fact, 'CAD-486')),
       );
@@ -400,6 +402,84 @@ describe('Git link persistence', () => {
       await record({ ...opened, trigger: 'pr_updated', request: at('open', T + 1_000) }),
     ).toMatchObject({ events: [], reconciliation: 'cleared' });
     expect(await marked()).toEqual({ pending: false, title: 'CAD-486 open' });
+  });
+
+  it('summarizes every stored observation of each head and keeps the newest of a suite', async () => {
+    const context = {
+      organizationId,
+      actor: { type: 'user' as const, id: actor },
+      role: null,
+      scopes: [],
+    };
+    const github = { organizationId, receiverId, provider: 'github' as const, repositoryId: 82 };
+    const shaC = 'c'.repeat(40);
+    const shaD = 'd'.repeat(40);
+    const suite = (
+      headSha: string,
+      attemptId: number,
+      conclusion: string,
+      at: number,
+    ): GitCheckObservation => ({
+      provider: 'github',
+      attemptId,
+      headSha,
+      observedAtMs: at,
+      completedAtMs: at,
+      status: 'completed',
+      conclusion,
+    });
+    await runWithOrganizationContext(context, () =>
+      runner.run(async (scope) => {
+        // 130 suites on one head, the failures last, and a second populated head.
+        for (let attempt = 1; attempt <= 130; attempt += 1) {
+          await observations.record(
+            scope,
+            github,
+            suite(shaC, attempt, attempt > 127 ? 'failure' : 'success', 1_000 + attempt),
+          );
+        }
+        await observations.record(scope, github, suite(shaD, 1, 'success', 5_000));
+        expect(await observations.record(scope, github, suite(shaD, 1, 'failure', 4_999))).toBe(
+          'ignored',
+        );
+        expect(await observations.record(scope, github, suite(shaD, 1, 'neutral', 5_000))).toBe(
+          'recorded',
+        );
+        const evidence = await observations.findEvidenceForHeads(scope, github, [shaC, shaD]);
+        expect(aggregateGitChecks(evidence.get(shaC) ?? null)).toEqual({
+          checks: { state: 'failed', total: 130, failed: 3 },
+          completedAtMs: 1_130,
+        });
+        expect(aggregateGitChecks(evidence.get(shaD) ?? null)).toEqual({
+          checks: { state: 'passed', total: 1, failed: 0 },
+          completedAtMs: 5_000,
+        });
+
+        const gitlab = { ...github, repositoryId: 83, provider: 'gitlab' as const };
+        await scope.client.query(
+          "insert into git_webhook_receivers (organization_id, id, provider) values ($1, $2, 'gitlab')",
+          [organizationId, gitlabReceiverId],
+        );
+        const project = { ...gitlab, receiverId: gitlabReceiverId };
+        for (let attempt = 1; attempt <= 120; attempt += 1) {
+          await observations.record(scope, project, {
+            provider: 'gitlab',
+            attemptId: attempt,
+            headSha: shaC,
+            observedAtMs: 2_000 + attempt,
+            completedAtMs: attempt === 120 ? null : 2_000 + attempt,
+            status: attempt === 120 ? 'running' : 'success',
+            jobTotal: 4,
+            jobFailed: 0,
+          });
+        }
+        const pipelines = await observations.findEvidenceForHeads(scope, project, [shaC]);
+        expect(aggregateGitChecks(pipelines.get(shaC) ?? null)).toEqual({
+          checks: { state: 'running', total: 4, failed: 0 },
+          completedAtMs: 2_119,
+        });
+      }),
+    );
   });
 
   it('does not return a truncated request audience over the bounded admission limit', async () => {

@@ -8,14 +8,17 @@ import { gitLinkDeliveryOf } from '../../../../../domain/policies/links/git-link
 import type { GitLinkChanged } from '../../../../../domain/events/links/git-link-changed.event.js';
 import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/deliveries/verified-git-delivery.value-object.js';
 import type { GitReceiverBinding } from '../../../../../domain/value-objects/deliveries/git-receiver-binding.value-object.js';
-import type { GitCheckObservation } from '../../../../../domain/value-objects/checks/git-check-observation.value-object.js';
+import type { GitChecksEvidence } from '../../../../../domain/value-objects/checks/git-checks-evidence.value-object.js';
 import type { GitLinkIdentity } from '../../../../../domain/value-objects/links/git-link-identity.value-object.js';
 import type { GitLinkProjection } from '../../../../../domain/value-objects/links/git-link-projection.value-object.js';
 import { DrizzleGitCheckObservationRepository } from '../checks/drizzle-git-check-observation.repository.js';
 import { gitLinks } from '../../schemas/links/git-links.schema.js';
 import { gitPurgedTasks } from '../../schemas/links/git-purged-tasks.schema.js';
 
-type GitLinkFact = Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
+type GitLinkFact = Exclude<
+  Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>,
+  { readonly trigger: 'head_checks' }
+>;
 type Row = typeof gitLinks.$inferSelect;
 type ProjectionColumns = Omit<
   typeof gitLinks.$inferInsert,
@@ -40,6 +43,70 @@ export class DrizzleGitLinkRepository {
   // #endregion
 
   // #region Methods
+  /**
+   * Finds the pull request links of the receiver's repository whose current head is `headSha`,
+   * whatever their request, or null when they exceed the bound of 20 links.
+   */
+  public async findHeadTargets(
+    scope: TransactionScope<DatabaseSchema>,
+    input: {
+      readonly organizationId: string;
+      readonly receiverId: string;
+      readonly binding: GitReceiverBinding;
+      readonly headSha: string;
+    },
+  ): Promise<readonly { readonly taskKey: string; readonly requestNumber: number }[] | null> {
+    if (scope.kind !== 'tenant' || scope.organizationId !== input.organizationId) {
+      throw new Error('Git link lookup does not belong to the tenant transaction.');
+    }
+    const { binding } = input;
+    const rows = await scope.db
+      .select({ taskKey: gitLinks.taskKey, taskId: gitLinks.taskId, identity: gitLinks.identity })
+      .from(gitLinks)
+      .where(
+        and(
+          eq(gitLinks.organizationId, input.organizationId),
+          eq(gitLinks.receiverId, input.receiverId),
+          eq(gitLinks.provider, binding.provider),
+          eq(gitLinks.headSha, input.headSha),
+          sql`${gitLinks.identity} ->> 'kind' = 'pull-request'`,
+          sql`${gitLinks.identity} -> 'binding' ->> 'repositoryId' = ${String(binding.repositoryId)}`,
+          sql`not exists (
+            select 1 from ${gitPurgedTasks}
+            where ${gitPurgedTasks.organizationId} = ${input.organizationId}
+              and ${gitPurgedTasks.taskKey} = ${gitLinks.taskKey}
+          )`,
+        ),
+      )
+      .orderBy(gitLinks.taskKey, gitLinks.id)
+      .limit(21);
+    // A truncated set must never be treated as the complete audience.
+    if (rows.length > 20) return null;
+    const targets: { readonly taskKey: string; readonly requestNumber: number }[] = [];
+    for (const row of rows) {
+      const { identity } = row;
+      if (
+        identity.organizationId !== input.organizationId ||
+        identity.receiverId !== input.receiverId ||
+        identity.taskId !== row.taskId ||
+        identity.kind !== 'pull-request'
+      ) {
+        throw new Error('Stored Git link does not match its verified identity.');
+      }
+      // The installation is part of a GitHub binding: another installation's link is not this one.
+      if (!sameBinding(identity.binding, binding)) continue;
+      if (
+        !targets.some(
+          (target) =>
+            target.taskKey === row.taskKey && target.requestNumber === identity.requestNumber,
+        )
+      ) {
+        targets.push({ taskKey: row.taskKey, requestNumber: identity.requestNumber });
+      }
+    }
+    return targets;
+  }
+
   /** Finds the tasks linked to the exact verified request, or null if the set exceeds its bound. */
   public async findRequestTaskKeys(
     scope: TransactionScope<DatabaseSchema>,
@@ -156,8 +223,8 @@ export class DrizzleGitLinkRepository {
     if (current?.headSha !== null && current?.headSha !== undefined) heads.add(current.headSha);
     const observations =
       identity.kind === 'branch'
-        ? new Map<string, readonly GitCheckObservation[]>()
-        : await this.observations.findForHeads(
+        ? new Map<string, GitChecksEvidence>()
+        : await this.observations.findEvidenceForHeads(
             scope,
             {
               organizationId: identity.organizationId,
@@ -171,7 +238,7 @@ export class DrizzleGitLinkRepository {
     const decision = decideGitLinkUpdate(
       current === undefined ? null : toProjection(current),
       delivery,
-      (headSha) => observations.get(headSha) ?? [],
+      (headSha) => observations.get(headSha) ?? null,
     );
     if (decision === null) return null;
 

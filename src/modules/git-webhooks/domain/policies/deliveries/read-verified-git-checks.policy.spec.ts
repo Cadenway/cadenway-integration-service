@@ -162,6 +162,31 @@ describe('readVerifiedGitChecks', () => {
     },
   );
 
+  it('orders a retried GitLab pipeline after its earlier completion by its latest job time', () => {
+    const retried = readVerifiedGitChecks(gitlabBinding, {
+      ...gitlabCompleted,
+      object_attributes: { ...gitlabPipeline, status: 'running', finished_at: null },
+      builds: [
+        {
+          status: 'failed',
+          created_at: '2026-11-08 20:11:00 UTC',
+          finished_at: '2026-11-08 20:18:00 UTC',
+        },
+        {
+          status: 'running',
+          created_at: '2026-11-08 20:25:00 UTC',
+          started_at: '2026-11-08 20:25:30 UTC',
+        },
+      ],
+    });
+    expect(retried?.observation).toMatchObject({
+      status: 'running',
+      observedAtMs: Date.UTC(2026, 10, 8, 20, 25, 30),
+      completedAtMs: null,
+    });
+    expect(retried?.observation.observedAtMs).toBeGreaterThan(pipelineTime);
+  });
+
   it.each([
     { action: 'created' },
     { repository: { id: 502 } },

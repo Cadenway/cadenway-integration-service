@@ -22,6 +22,9 @@ export interface GitLinkDelivery {
   /** Head SHA of a check observation delivery. */
   readonly checksHeadSha: string | null;
 
+  /** Completion time of a check receipt admitted by the previous release, without observation. */
+  readonly legacyChecksCompletedAtMs: number | null;
+
   /** Where the task key was found, used when the delivery creates the link. */
   readonly linkSource: GitLinkSource | null;
   // #endregion

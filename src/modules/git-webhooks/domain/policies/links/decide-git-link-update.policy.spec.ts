@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidGitLinkError } from '../../errors/links/invalid-git-link.error.js';
 import type { GitCheckObservation } from '../../value-objects/checks/git-check-observation.value-object.js';
+import type { GitChecksEvidence } from '../../value-objects/checks/git-checks-evidence.value-object.js';
 import type { GitLinkDelivery } from '../../value-objects/links/git-link-delivery.value-object.js';
 import type { GitLinkProjection } from '../../value-objects/links/git-link-projection.value-object.js';
 import { decideGitLinkUpdate } from './decide-git-link-update.policy.js';
@@ -19,6 +20,7 @@ function request(overrides: Partial<GitLinkDelivery> = {}): GitLinkDelivery {
     membersObservedAtMs: null,
     head: null,
     checksHeadSha: null,
+    legacyChecksCompletedAtMs: null,
     linkSource: null,
     ...overrides,
   };
@@ -57,6 +59,39 @@ function suite(
   };
 }
 
+/** Summarizes observations as the observation store does in SQL. */
+function evidence(observations: readonly GitCheckObservation[]): GitChecksEvidence | null {
+  const [first] = observations;
+  if (first === undefined) return null;
+  if (first.provider === 'gitlab') {
+    const pipelines = observations.filter((observation) => observation.provider === 'gitlab');
+    const latest = pipelines.reduce((a, b) => (b.attemptId > a.attemptId ? b : a));
+    const completed = pipelines.flatMap(({ completedAtMs }) =>
+      completedAtMs === null ? [] : [completedAtMs],
+    );
+    return {
+      provider: 'gitlab',
+      latest,
+      completedAtMs: completed.length === 0 ? null : Math.max(...completed),
+    };
+  }
+  return {
+    provider: 'github',
+    suites: observations.flatMap((observation) =>
+      observation.provider === 'github'
+        ? [
+            {
+              status: observation.status,
+              conclusion: observation.conclusion,
+              count: 1,
+              completedAtMs: observation.completedAtMs,
+            },
+          ]
+        : [],
+    ),
+  };
+}
+
 /** Applies deliveries in arrival order, as the dispatch transaction does. */
 function replay(
   deliveries: readonly GitLinkDelivery[],
@@ -65,7 +100,9 @@ function replay(
   let projection: GitLinkProjection | null = null;
   const facts: string[] = [];
   for (const delivery of deliveries) {
-    const decision = decideGitLinkUpdate(projection, delivery, (sha) => observations[sha] ?? []);
+    const decision = decideGitLinkUpdate(projection, delivery, (sha) =>
+      evidence(observations[sha] ?? []),
+    );
     if (decision === null) continue;
     projection = decision.projection;
     for (const event of decision.events) {
@@ -96,7 +133,7 @@ describe('Git link ordering and reconciliation', () => {
   });
 
   it('only updates an existing link for a delivery that cannot create it', () => {
-    expect(decideGitLinkUpdate(null, close(T), () => [])).toBeNull();
+    expect(decideGitLinkUpdate(null, close(T), () => null)).toBeNull();
   });
 
   it('closes then reopens at the same provider time and marks the tie', () => {
@@ -205,7 +242,7 @@ describe('Git link members', () => {
     const decision = decideGitLinkUpdate(
       replay([opening]).projection,
       request({ members: { draft: true }, membersObservedAtMs: T }),
-      () => [],
+      () => null,
     );
     expect(decision?.events).toEqual([]);
     expect(decision?.projection.memberObservedAtMs.draft).toBe(T);
@@ -229,11 +266,11 @@ describe('Git link members', () => {
       { ...request({ creates: true }), kind: 'branch', lifecycle: null },
     ]).projection;
     expect(branch?.status).toBe('created');
-    expect(() => decideGitLinkUpdate(branch, close(T), () => [])).toThrow(InvalidGitLinkError);
+    expect(() => decideGitLinkUpdate(branch, close(T), () => null)).toThrow(InvalidGitLinkError);
     const open = replay([opening]).projection;
     if (open === null) throw new Error('missing projection');
     expect(() =>
-      decideGitLinkUpdate({ ...open, version: Number.MAX_SAFE_INTEGER }, close(T), () => []),
+      decideGitLinkUpdate({ ...open, version: Number.MAX_SAFE_INTEGER }, close(T), () => null),
     ).toThrow(InvalidGitLinkError);
   });
 });
@@ -281,16 +318,16 @@ describe('Git link checks', () => {
     const first = replay([opening], observations);
     observations[headA] = [suite(315, 'completed', 'success', T + 60_000)];
     const decision = decideGitLinkUpdate(first.projection, checks(headA), (sha) =>
-      sha === headA ? (observations[headA] ?? []) : [],
+      evidence(sha === headA ? (observations[headA] ?? []) : []),
     );
     expect(decision?.events).toEqual([{ type: 'checks-completed', version: 3 }]);
   });
 
   it('leaves checks absent when the only suite became stale', () => {
     const first = replay([opening], { [headA]: [suite(315, 'queued', null, T)] });
-    const decision = decideGitLinkUpdate(first.projection, checks(headA), () => [
-      suite(315, 'completed', 'stale', T + 60_000),
-    ]);
+    const decision = decideGitLinkUpdate(first.projection, checks(headA), () =>
+      evidence([suite(315, 'completed', 'stale', T + 60_000)]),
+    );
     expect(decision?.projection.checks).toBeNull();
     expect(decision?.events).toEqual([{ type: 'link-updated', version: 3, changed: ['checks'] }]);
   });
@@ -308,21 +345,43 @@ describe('Git link checks', () => {
     });
     const first = replay([opening], { [headA]: [pipeline(31, T)] });
     expect(first.projection?.checks).toEqual({ state: 'passed', total: 3, failed: 0 });
-    const decision = decideGitLinkUpdate(first.projection, checks(headA), () => [
-      pipeline(31, T),
-      pipeline(32, T + 60_000),
-    ]);
+    const decision = decideGitLinkUpdate(first.projection, checks(headA), () =>
+      evidence([pipeline(31, T), pipeline(32, T + 60_000)]),
+    );
     expect(decision?.events).toEqual([
       { type: 'link-updated', version: 3, changed: ['checksCompletedAt'] },
     ]);
     expect(decision?.projection.checksCompletedAtMs).toBe(T + 60_000);
   });
 
+  it('advances the completion of a previous-release check receipt that has no observation', () => {
+    const first = replay([opening]);
+    const legacy = request({ checksHeadSha: headA, legacyChecksCompletedAtMs: T + 60_000 });
+    const decision = decideGitLinkUpdate(first.projection, legacy, () => null);
+    expect(decision?.events).toEqual([{ type: 'checks-completed', version: 2 }]);
+    expect(decision?.projection).toMatchObject({ checks: null, checksCompletedAtMs: T + 60_000 });
+    expect(decideGitLinkUpdate(decision?.projection ?? null, legacy, () => null)?.events).toEqual(
+      [],
+    );
+  });
+
+  it('uses stored observations over the fields of a previous-release receipt', () => {
+    const first = replay([opening]);
+    const legacy = request({ checksHeadSha: headA, legacyChecksCompletedAtMs: T + 60_000 });
+    const decision = decideGitLinkUpdate(first.projection, legacy, () =>
+      evidence([suite(315, 'completed', 'failure', T + 30_000)]),
+    );
+    expect(decision?.projection).toMatchObject({
+      checks: { state: 'failed', total: 1, failed: 1 },
+      checksCompletedAtMs: T + 30_000,
+    });
+  });
+
   it('changes nothing for checks of a head that is not the link head', () => {
     const first = replay([opening]);
-    const decision = decideGitLinkUpdate(first.projection, checks(headB), () => [
-      suite(316, 'completed', 'success', T, headB),
-    ]);
+    const decision = decideGitLinkUpdate(first.projection, checks(headB), () =>
+      evidence([suite(316, 'completed', 'success', T, headB)]),
+    );
     expect(decision?.events).toEqual([]);
     expect(decision?.projection.checks).toBeNull();
   });

@@ -407,25 +407,80 @@ describe('Git link settlement, merge intents and the link read', () => {
         head: { sha: current, observedAtMs: T },
       }),
     );
-    for (const sha of [current, orphan]) {
+    for (const [sha, repositoryId] of [
+      [current, mapping.binding.repositoryId],
+      [orphan, mapping.binding.repositoryId],
+      // The same head in another repository of the receiver is not that link's head.
+      [current, mapping.binding.repositoryId + 1],
+    ] as const) {
       await query(
         `insert into git_check_observations
            (organization_id, receiver_id, provider, repository_id, head_sha, attempt_id, status,
             conclusion, observed_at_ms, completed_at_ms, updated_at)
          values ($1, $2, 'github', $3, $4, 1, 'completed', 'success', $5, $5, now() - interval '8 days')`,
-        [organizationId, receiverId, mapping.binding.repositoryId, sha, T],
+        [organizationId, receiverId, repositoryId, sha, T],
       );
     }
     await query(
       `update git_links set reconciliation_pending_since = now() where task_key = 'CAD-489'`,
     );
-    await expect(maintenance.pruneCheckObservations(1_000)).resolves.toBe(1);
-    expect(await query('select head_sha from git_check_observations')).toEqual([
-      { head_sha: current },
-    ]);
+    await expect(maintenance.pruneCheckObservations(1_000)).resolves.toBe(2);
+    expect(
+      await query(
+        'select head_sha, repository_id::int as repository_id from git_check_observations',
+      ),
+    ).toEqual([{ head_sha: current, repository_id: mapping.binding.repositoryId }]);
     const marked = await maintenance.findReconciliationPending(100);
     expect(marked).toHaveLength(1);
     expect(marked[0]?.organizationId).toBe(organizationId);
+  });
+
+  it('refreshes the links of a head that a check suite names no request for', async () => {
+    const head = 'f'.repeat(40);
+    await settle(
+      claim('CAD-492', 401, {
+        trigger: 'pr_open',
+        closingTaskKeys: [],
+        head: { sha: head, observedAtMs: T },
+      }),
+    );
+    await settle(
+      claim('CAD-492', 402, {
+        trigger: 'pr_open',
+        closingTaskKeys: [],
+        head: { sha: 'e'.repeat(40), observedAtMs: T },
+      }),
+    );
+    await query(
+      `insert into git_check_observations
+         (organization_id, receiver_id, provider, repository_id, head_sha, attempt_id, status,
+          conclusion, observed_at_ms, completed_at_ms)
+       values ($1, $2, 'github', $3, $4, 9, 'completed', 'success', $5, $5)`,
+      [organizationId, receiverId, mapping.binding.repositoryId, head, T + 1_000],
+    );
+    await settle(
+      claim('CAD-492', 0, {
+        trigger: 'head_checks',
+        headSha: head,
+        targets: [
+          { taskKey: 'CAD-492', requestNumber: 401 },
+          { taskKey: 'CAD-492', requestNumber: 402 },
+        ],
+        checks: { headSha: head, attemptId: 9, completedAtMs: T + 1_000, observed: true },
+        closingTaskKeys: [],
+      }),
+    );
+    // Only the link whose current head is the suite's head changes.
+    expect(
+      await query(
+        `select (identity ->> 'requestNumber')::int as number, checks, version::int as version
+           from git_links where task_key = 'CAD-492' order by 1`,
+      ),
+    ).toEqual([
+      { number: 401, checks: { state: 'passed', total: 1, failed: 0 }, version: 2 },
+      { number: 402, checks: null, version: 1 },
+    ]);
+    expect((await facts('CAD-492')).map(({ name }) => name)).toContain('git.checks-completed.v1');
   });
 
   it('pages a task links newest first within the organization and hides a purged task', async () => {

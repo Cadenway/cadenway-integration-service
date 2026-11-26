@@ -1,4 +1,4 @@
-/** Identifies a completed provider check against an already authorized pull request link. */
+/** Identifies a provider check observation against an already authorized pull request link. */
 export interface VerifiedGitChecksCorrelation {
   // #region Properties
   /** Repository-local PR or MR number and the exact tested revision. */
@@ -8,7 +8,13 @@ export interface VerifiedGitChecksCorrelation {
   /** Provider suite or pipeline ID, which may also identify a later retry. */
   readonly attemptId: number;
 
-  /** Signed suite update or pipeline finish time in Unix milliseconds. */
+  /** Provider time of the observation in Unix milliseconds. */
   readonly completedAtMs: number;
+
+  /**
+   * Set when admission stored the observation. A receipt of the previous release lacks it and
+   * only carries a completed suite or pipeline.
+   */
+  readonly observed?: true;
   // #endregion
 }

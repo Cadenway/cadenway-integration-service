@@ -1,33 +1,33 @@
 import { describe, expect, it } from 'vitest';
 
-import type { GitCheckObservation } from '../../value-objects/checks/git-check-observation.value-object.js';
+import type { GitChecksEvidence } from '../../value-objects/checks/git-checks-evidence.value-object.js';
 import { aggregateGitChecks } from './aggregate-git-checks.policy.js';
-import { replacesGitCheckObservation } from './order-git-check-observation.policy.js';
 
-const headSha = 'c'.repeat(40);
 const T = Date.UTC(2026, 10, 7, 15, 20);
 
-function suite(
-  attemptId: number,
-  status: 'queued' | 'in_progress' | 'completed',
-  conclusion: string | null,
-  at = T,
-): GitCheckObservation {
+function github(
+  ...suites: readonly [
+    status: 'queued' | 'in_progress' | 'completed',
+    conclusion: string | null,
+    count: number,
+    completedAtMs?: number,
+  ][]
+): GitChecksEvidence {
   return {
     provider: 'github',
-    attemptId,
-    headSha,
-    observedAtMs: at,
-    completedAtMs: status === 'completed' ? at : null,
-    status,
-    conclusion,
+    suites: suites.map(([status, conclusion, count, completedAtMs]) => ({
+      status,
+      conclusion,
+      count,
+      completedAtMs: status === 'completed' ? (completedAtMs ?? T) : null,
+    })),
   };
 }
 
 describe('Git checks aggregate', () => {
   it('is absent without an eligible observation', () => {
-    expect(aggregateGitChecks([])).toEqual({ checks: null, completedAtMs: null });
-    expect(aggregateGitChecks([suite(1, 'completed', 'stale')])).toEqual({
+    expect(aggregateGitChecks(null)).toEqual({ checks: null, completedAtMs: null });
+    expect(aggregateGitChecks(github(['completed', 'stale', 3]))).toEqual({
       checks: null,
       completedAtMs: null,
     });
@@ -35,56 +35,54 @@ describe('Git checks aggregate', () => {
 
   it('fails as soon as a completed suite failed, even while others run', () => {
     expect(
-      aggregateGitChecks([
-        suite(1, 'completed', 'timed_out'),
-        suite(2, 'in_progress', null),
-        suite(3, 'completed', 'success', T + 1),
-      ]),
+      aggregateGitChecks(
+        github(
+          ['completed', 'timed_out', 1],
+          ['in_progress', null, 1],
+          ['completed', 'success', 1, T + 1],
+        ),
+      ),
     ).toEqual({ checks: { state: 'failed', total: 3, failed: 1 }, completedAtMs: T + 1 });
   });
 
+  it('counts every suite of a large head exactly', () => {
+    expect(
+      aggregateGitChecks(github(['completed', 'success', 140], ['completed', 'failure', 2])),
+    ).toEqual({ checks: { state: 'failed', total: 142, failed: 2 }, completedAtMs: T });
+  });
+
   it('runs while a suite is queued and passes once every suite succeeded, was neutral or skipped', () => {
-    expect(aggregateGitChecks([suite(1, 'queued', null)]).checks).toEqual({
+    expect(aggregateGitChecks(github(['queued', null, 1])).checks).toEqual({
       state: 'running',
       total: 1,
       failed: 0,
     });
     expect(
-      aggregateGitChecks([
-        suite(1, 'completed', 'success'),
-        suite(2, 'completed', 'neutral'),
-        suite(3, 'completed', 'skipped'),
-        suite(4, 'completed', 'stale', T + 10),
-      ]),
+      aggregateGitChecks(
+        github(
+          ['completed', 'success', 1],
+          ['completed', 'neutral', 1],
+          ['completed', 'skipped', 1],
+          ['completed', 'stale', 1, T + 10],
+        ),
+      ),
     ).toEqual({ checks: { state: 'passed', total: 3, failed: 0 }, completedAtMs: T });
   });
 
-  it('uses the GitLab pipeline with the highest ID and its job counts', () => {
-    const pipeline = (
-      attemptId: number,
-      status: 'running' | 'failed' | 'canceled',
-      completedAtMs: number | null,
-    ): GitCheckObservation => ({
-      provider: 'gitlab',
-      attemptId,
-      headSha,
-      observedAtMs: completedAtMs ?? T,
-      completedAtMs,
-      status,
-      jobTotal: 4,
-      jobFailed: status === 'running' ? 0 : 1,
-    });
-    expect(aggregateGitChecks([pipeline(31, 'failed', T), pipeline(32, 'running', null)])).toEqual({
-      checks: { state: 'running', total: 4, failed: 0 },
-      completedAtMs: T,
-    });
-    expect(aggregateGitChecks([pipeline(33, 'canceled', T + 5)]).checks?.state).toBe('failed');
-  });
-
-  it('replaces a stored observation with an equal or newer one only', () => {
-    const stored = suite(1, 'completed', 'success');
-    expect(replacesGitCheckObservation(null, stored)).toBe(true);
-    expect(replacesGitCheckObservation(stored, suite(1, 'queued', null, T))).toBe(true);
-    expect(replacesGitCheckObservation(stored, suite(1, 'queued', null, T - 1))).toBe(false);
+  it('uses the latest GitLab pipeline and its job counts', () => {
+    expect(
+      aggregateGitChecks({
+        provider: 'gitlab',
+        latest: { attemptId: 32, status: 'running', jobTotal: 4, jobFailed: 0 },
+        completedAtMs: T,
+      }),
+    ).toEqual({ checks: { state: 'running', total: 4, failed: 0 }, completedAtMs: T });
+    expect(
+      aggregateGitChecks({
+        provider: 'gitlab',
+        latest: { attemptId: 33, status: 'canceled' },
+        completedAtMs: T + 5,
+      }).checks,
+    ).toEqual({ state: 'failed' });
   });
 });

@@ -22,6 +22,15 @@ export interface GitDeliveryTransaction {
     headSha?: string,
   ) => Promise<readonly string[] | null>;
 
+  /**
+   * Selects the existing pull request links of the mapped repository whose current head is
+   * `headSha`, or null on overflow.
+   */
+  readonly findHeadTargets: (
+    binding: GitRepositoryIdentity,
+    headSha: string,
+  ) => Promise<readonly { readonly taskKey: string; readonly requestNumber: number }[] | null>;
+
   /** Finds earlier admitted work that can establish an authorized request link. */
   readonly findPendingRequestWork: (
     mapping: GitDeliveryMapping,
