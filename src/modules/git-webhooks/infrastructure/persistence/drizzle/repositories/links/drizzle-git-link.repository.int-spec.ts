@@ -13,6 +13,7 @@ import type { VerifiedGitDelivery } from '../../../../../domain/value-objects/de
 import type { GitCheckObservation } from '../../../../../domain/value-objects/checks/git-check-observation.value-object.js';
 import { aggregateGitChecks } from '../../../../../domain/policies/checks/aggregate-git-checks.policy.js';
 import { DrizzleGitCheckObservationRepository } from '../checks/drizzle-git-check-observation.repository.js';
+import { finishGitLinkProjectionMigration } from '../../transactions/links/finish-git-link-projection.unit-of-work.js';
 import { DrizzleGitLinkRepository } from './drizzle-git-link.repository.js';
 
 const composeFile = fileURLToPath(
@@ -50,6 +51,7 @@ function compose(...args: readonly string[]): string {
 describe('Git link persistence', () => {
   let pool: pg.Pool | undefined;
   let runner: TenantTransactionRunner;
+  let migrationUrl: string;
   const links = new DrizzleGitLinkRepository();
   const observations = new DrizzleGitCheckObservationRepository();
 
@@ -57,9 +59,8 @@ describe('Git link persistence', () => {
     compose('up', '--detach', '--wait', '--wait-timeout', '120', 'postgres');
     const port = compose('port', 'postgres', '5432').trim().split(':').at(-1);
     if (port === undefined) throw new Error('PostgreSQL port is unavailable.');
-    const migrator = new pg.Pool({
-      connectionString: `postgres://integration_migrator:integration_migrator@127.0.0.1:${port}/integration`,
-    });
+    migrationUrl = `postgres://integration_migrator:integration_migrator@127.0.0.1:${port}/integration`;
+    const migrator = new pg.Pool({ connectionString: migrationUrl });
     try {
       await migrate(drizzle({ client: migrator }), { migrationsFolder: 'migrations' });
     } finally {
@@ -485,6 +486,84 @@ describe('Git link persistence', () => {
         });
       }),
     );
+  });
+
+  it('reads a legacy lifecycle watermark from the head and backfills it past a held row', async () => {
+    const context = {
+      organizationId,
+      actor: { type: 'user' as const, id: actor },
+      role: null,
+      scopes: [],
+    };
+    const T = Date.UTC(2026, 10, 7, 15, 0);
+    const opened = {
+      ...request,
+      requestNumber: 240,
+      taskKeys: ['CAD-487'],
+      head: { sha: 'e'.repeat(40), observedAtMs: T },
+    } as const;
+    const identity = gitLinkIdentity({ organizationId, receiverId, taskId, binding }, opened);
+    const record = (fact: Parameters<DrizzleGitLinkRepository['record']>[2], sequence: number) =>
+      runWithOrganizationContext(context, () =>
+        runner.run((scope) => links.record(scope, identity, fact, 'CAD-487', sequence)),
+      );
+    await record(opened, 1);
+    await record(
+      { ...opened, trigger: 'pr_closed', head: { sha: 'e'.repeat(40), observedAtMs: T } },
+      2,
+    );
+    // As the previous release left it: no lifecycle watermark.
+    const legacy = () =>
+      runWithOrganizationContext(context, () =>
+        runner.run(async (scope) => {
+          await scope.client.query(
+            "update git_links set lifecycle_observed_at_ms = null where task_key = 'CAD-487'",
+          );
+        }),
+      );
+    await legacy();
+    const reopenedEarlier = {
+      ...opened,
+      trigger: 'pr_reopened',
+      request: { state: { state: 'open', observedAtMs: T - 1_000 }, members: {} },
+    } as const;
+    expect((await record(reopenedEarlier, 3))?.events).toEqual([]);
+
+    // A dispatch holds the row while the migration finishes.
+    await legacy();
+    const holder = await pool?.connect();
+    if (holder === undefined) throw new Error('No pool.');
+    const migrator = new pg.Client({ connectionString: migrationUrl });
+    await migrator.connect();
+    try {
+      await holder.query('begin');
+      await holder.query(
+        "select set_config('app.organization_id', $1, true), set_config('app.system_access', '', true)",
+        [organizationId],
+      );
+      await holder.query("select id from git_links where task_key = 'CAD-487' for update");
+      let finished = false;
+      const finishing = finishGitLinkProjectionMigration(
+        migrator as unknown as Parameters<typeof finishGitLinkProjectionMigration>[0],
+      ).then(() => {
+        finished = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(finished).toBe(false);
+      await holder.query('commit');
+      await finishing;
+    } finally {
+      holder.release();
+      await migrator.end();
+    }
+    const stored = await runWithOrganizationContext(context, () =>
+      runner.run((scope) =>
+        scope.client.query(
+          "select lifecycle_observed_at_ms::double precision as at from git_links where task_key = 'CAD-487'",
+        ),
+      ),
+    );
+    expect(stored.rows).toEqual([{ at: T }]);
   });
 
   it('does not return a truncated request audience over the bounded admission limit', async () => {

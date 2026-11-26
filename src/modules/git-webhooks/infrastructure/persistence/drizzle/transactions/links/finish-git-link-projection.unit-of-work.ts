@@ -42,7 +42,8 @@ const backfillBatch = 1_000;
  * 1. builds the new `git_links` indexes concurrently, rebuilding one left invalid;
  * 2. validates the new `git_links` checks, which only takes a share update exclusive lock;
  * 3. backfills the lifecycle watermark of request links recorded before it existed, from their
- *    last head observation, in batches of 1,000 short transactions.
+ *    last head observation, in batches of 1,000 until none is left, waiting for a row a running
+ *    dispatch holds. Until then, the projection reads the same fallback.
  *
  * @param client - A migrator session outside any transaction, released by the caller.
  */
@@ -85,10 +86,11 @@ export async function finishGitLinkProjectionMigration(client: PoolClient): Prom
                and lifecycle_observed_at_ms is null
                and head_last_observed_at_ms is not null
              limit $1
-             for update skip locked)`,
+             for update)`,
         [backfillBatch],
       );
-      if ((batch.rowCount ?? 0) < backfillBatch) break;
+      // Waits for a row a running dispatch holds: the loop ends once no eligible row is left.
+      if ((batch.rowCount ?? 0) === 0) break;
     }
   } finally {
     await client.query("select set_config('app.system_access', '', false)");

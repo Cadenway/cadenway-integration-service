@@ -377,7 +377,11 @@ function toProjection(row: Row): GitLinkProjection {
   return {
     status: row.status,
     version: row.version,
-    lifecycleObservedAtMs: row.lifecycleObservedAtMs,
+    // A request link recorded before the lifecycle watermark existed falls back on its last head
+    // observation, as the migration backfills it.
+    lifecycleObservedAtMs:
+      row.lifecycleObservedAtMs ??
+      (row.identity.kind === 'pull-request' ? row.headLastObservedAtMs : null),
     lifecycleAdmissionSequence: row.lifecycleAdmissionSequence ?? 0,
     members: Object.fromEntries(Object.entries(members).filter(([, value]) => value !== null)),
     memberObservedAtMs: row.memberObservedAtMs,
