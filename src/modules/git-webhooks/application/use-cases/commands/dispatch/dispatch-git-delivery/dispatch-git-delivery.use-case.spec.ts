@@ -12,6 +12,8 @@ const input = {
 };
 const claim = {
   organizationId: input.organizationId,
+  deliveryId: input.deliveryId,
+  admissionSequence: 1,
   commandKey: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e04',
   taskKey: input.taskKey,
   receiverRevision: 2,
@@ -28,6 +30,7 @@ const claim = {
     taskKeys: ['CAD-482', 'CAD-483'],
     closingTaskKeys: [],
   },
+  mergeIntent: true,
 } satisfies GitDispatchClaim;
 const taskReceipt = {
   disposition: 'applied' as const,
@@ -39,13 +42,13 @@ const taskReceipt = {
 function setup(): {
   readonly command: DispatchGitDelivery;
   readonly work: GitDispatchUnitOfWork;
-  readonly task: GitTaskAction;
+  readonly task: Pick<GitTaskAction, 'apply'>;
 } {
   const work: GitDispatchUnitOfWork = {
     prepare: vi.fn().mockResolvedValue({ status: 'ready', claim }),
     finish: vi.fn().mockResolvedValue('completed'),
   };
-  const task: GitTaskAction = { apply: vi.fn().mockResolvedValue(taskReceipt) };
+  const task: Pick<GitTaskAction, 'apply'> = { apply: vi.fn().mockResolvedValue(taskReceipt) };
   return { command: new DispatchGitDelivery(work, task), work, task };
 }
 
@@ -60,8 +63,9 @@ describe('DispatchGitDelivery', () => {
 
   it.each([
     ['branch', 'progress'],
-    ['pr_merged', 'done'],
     ['pr_closed', null],
+    ['pr_reopened', null],
+    ['pr_updated', null],
   ] as const)('maps the %s default to %s', async (trigger, status) => {
     const { command, work, task } = setup();
     const fact =
@@ -70,7 +74,7 @@ describe('DispatchGitDelivery', () => {
         : {
             ...claim.fact,
             trigger,
-            closingTaskKeys: trigger === 'pr_merged' ? [input.taskKey] : [],
+            closingTaskKeys: [],
           };
     const current = { ...claim, fact } as GitDispatchClaim;
     vi.mocked(work.prepare).mockResolvedValue({ status: 'ready', claim: current });
@@ -78,23 +82,47 @@ describe('DispatchGitDelivery', () => {
     expect(task.apply).toHaveBeenCalledWith(current, status);
   });
 
-  it('resolves the placement without changing status for a merge reference without a closing verb', async () => {
-    const { command, task, work } = setup();
-    const current: GitDispatchClaim = {
-      ...claim,
-      fact: { ...claim.fact, trigger: 'pr_merged', closingTaskKeys: ['CAD-483'] },
-    };
-    vi.mocked(work.prepare).mockResolvedValue({ status: 'ready', claim: current });
-    const receipt = { ...taskReceipt, disposition: 'no_op' as const };
-    vi.mocked(task.apply).mockResolvedValue(receipt);
-    await expect(command.execute(input)).resolves.toEqual({ status: 'completed' });
-    expect(task.apply).toHaveBeenCalledExactlyOnceWith(current, null);
-    expect(work.finish).toHaveBeenCalledWith({
-      ...input,
-      claim: current,
-      result: receipt,
-    });
-  });
+  it.each([[['CAD-483']], [['CAD-482']]])(
+    'only authorizes the merged link under its own key, leaving the status to the merge intent (closing %j)',
+    async (closingTaskKeys) => {
+      const { command, task, work } = setup();
+      const current: GitDispatchClaim = {
+        ...claim,
+        fact: { ...claim.fact, trigger: 'pr_merged', closingTaskKeys },
+      };
+      vi.mocked(work.prepare).mockResolvedValue({ status: 'ready', claim: current });
+      const receipt = { ...taskReceipt, disposition: 'no_op' as const };
+      vi.mocked(task.apply).mockResolvedValue(receipt);
+      await expect(command.execute(input)).resolves.toEqual({ status: 'completed' });
+      expect(task.apply).toHaveBeenCalledExactlyOnceWith(
+        { ...current, commandKey: `${claim.commandKey}:link` },
+        null,
+      );
+      expect(work.finish).toHaveBeenCalledWith({
+        ...input,
+        claim: current,
+        result: receipt,
+      });
+    },
+  );
+
+  it.each([
+    ['CAD-482', 'done'],
+    ['CAD-483', null],
+  ] as const)(
+    'keeps the direct merge status under the claim key for a status-only or earlier receipt (closing %s)',
+    async (closingTaskKey, status) => {
+      const { command, task, work } = setup();
+      const current: GitDispatchClaim = {
+        ...claim,
+        fact: { ...claim.fact, trigger: 'pr_merged', closingTaskKeys: [closingTaskKey] },
+        mergeIntent: false,
+      };
+      vi.mocked(work.prepare).mockResolvedValue({ status: 'ready', claim: current });
+      await expect(command.execute(input)).resolves.toEqual({ status: 'completed' });
+      expect(task.apply).toHaveBeenCalledExactlyOnceWith(current, status);
+    },
+  );
 
   it.each(['completed', 'closed'] as const)(
     'does not call Task again for a %s target',

@@ -5,7 +5,9 @@ import { and, eq } from 'drizzle-orm';
 import type { GitWebhookReceiver } from '../../../../../application/models/deliveries/git-webhook-receiver.model.js';
 import type { GitDeliveryTransaction } from '../../../../../application/ports/outbound/transactions/deliveries/git-delivery-transaction.port.js';
 import type { GitDeliveryUnitOfWork } from '../../../../../application/ports/outbound/transactions/deliveries/git-delivery-unit-of-work.port.js';
+import type { GitHeadChecksJobsProducer } from '../../../../jobs/pg-boss/checks/git-head-checks.adapter.js';
 import type { GitDispatchJobsProducer } from '../../../../jobs/pg-boss/dispatch/git-dispatch.adapter.js';
+import { DrizzleGitCheckObservationRepository } from '../../repositories/checks/drizzle-git-check-observation.repository.js';
 import type { DrizzleGitLinkRepository } from '../../repositories/links/drizzle-git-link.repository.js';
 import { gitWebhookReceivers } from '../../schemas/deliveries/git-webhook-receivers.schema.js';
 import { DrizzleGitDeliveryTransaction } from './drizzle-git-delivery.unit-of-work.js';
@@ -19,6 +21,7 @@ export class DrizzleGitAdmissionUnitOfWork implements GitDeliveryUnitOfWork {
     private readonly receivers: readonly GitWebhookReceiver[],
     private readonly jobs: GitDispatchJobsProducer,
     private readonly links?: DrizzleGitLinkRepository,
+    private readonly headChecks?: Pick<GitHeadChecksJobsProducer, 'enqueue'>,
   ) {}
   // #endregion
 
@@ -71,6 +74,8 @@ export class DrizzleGitAdmissionUnitOfWork implements GitDeliveryUnitOfWork {
             receiver.revision,
             this.jobs,
             this.links,
+            this.links === undefined ? undefined : new DrizzleGitCheckObservationRepository(),
+            this.headChecks,
           );
           return { active: true, result: await work(transaction) } as const;
         }),

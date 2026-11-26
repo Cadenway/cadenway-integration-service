@@ -95,6 +95,16 @@ each value comes from on a server.
 | `INTERNAL_TOKEN_ISSUER`, `INTERNAL_TOKEN_PRIVATE_JWK` | Nothing yet           | `integration-service` and its private key, to sign its calls once the first one is written                                                                       |
 | `TASK_SERVICE_URL`                                    | Nothing yet           | The service it calls; `http://localhost:3013` locally                                                                                                            |
 
+### Git link rollout
+
+`GIT_LINK_EVENTS_ENABLED` (default `false`) turns on link recording and its facts, and
+`GIT_LINK_PURGE_ENABLED` keeps task purges running while link admission pauses. Keep
+`GIT_LINK_EVENTS_ENABLED` off during any deployment where this release and an earlier one both run,
+during the GitOps agent's rolling replacement as during a rollback: a worker of an earlier release
+can settle a newer head on a link and leave the previous head's checks on it. Turn it on only once
+no earlier replica runs. To roll back, turn it off first, drain the link queues, then roll back. The
+service logs a warning at start-up while the flag is on, as a reminder of this rule.
+
 The signing variables join `src/config/app-config.ts` with the first call, as
 `internalTokenSignerConfigShape` of the kit: `.env.example` cannot carry a private key, and a fresh
 `pnpm start:dev` must start from it. Until then the private key stays commented out there; put a
@@ -137,7 +147,10 @@ production stay in the secrets of cadenway-ops.
 (`pnpm migration:generate --name <what_it_does>` names the file). drizzle-kit enables row-level
 security on a table with a policy but never forces it: add
 `ALTER TABLE "<table>" FORCE ROW LEVEL SECURITY;` to the generated file for every new tenant table
-before it is merged, then never edit it again. `pnpm migration:run` builds and runs
+before it is merged, then never edit it again. An index on an existing table is built
+concurrently, and a check on it added `NOT VALID`, by a step `src/migrate.ts` runs after the
+Drizzle transaction commits, as `finishOutboxLeaseMigration` of the kit does for the outbox and
+`finishIntegrationMigrations` for the Git link projection of migration 0008. `pnpm migration:run` builds and runs
 `dist/migrate.js`, the command the GitOps agent runs in a one-off container before it starts a new
 version; it connects as the migrator role of `MIGRATION_DATABASE_URL` and applies what the journal
 does not list yet.

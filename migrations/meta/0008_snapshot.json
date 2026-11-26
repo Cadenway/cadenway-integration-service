@@ -1,0 +1,2247 @@
+{
+  "id": "36178006-f0b5-4b50-9ab3-e80de17e2d6d",
+  "prevId": "41e9d3d4-c4d2-4e43-9348-534b43fbbc45",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.git_check_observations": {
+      "name": "git_check_observations",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receiver_id": {
+          "name": "receiver_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repository_id": {
+          "name": "repository_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conclusion": {
+          "name": "conclusion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_total": {
+          "name": "job_total",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_failed": {
+          "name": "job_failed",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "observed_at_ms": {
+          "name": "observed_at_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_at_ms": {
+          "name": "completed_at_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "git_check_observations_updated_index": {
+          "name": "git_check_observations_updated_index",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "git_check_observations_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk": {
+          "name": "git_check_observations_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk",
+          "tableFrom": "git_check_observations",
+          "tableTo": "git_webhook_receivers",
+          "columnsFrom": [
+            "organization_id",
+            "receiver_id",
+            "provider"
+          ],
+          "columnsTo": [
+            "organization_id",
+            "id",
+            "provider"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "git_check_observations_organization_id_receiver_id_repository_id_head_sha_attempt_id_pk": {
+          "name": "git_check_observations_organization_id_receiver_id_repository_id_head_sha_attempt_id_pk",
+          "columns": [
+            "organization_id",
+            "receiver_id",
+            "repository_id",
+            "head_sha",
+            "attempt_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_check_observations_tenant_isolation": {
+          "name": "git_check_observations_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_check_observations_provider_check": {
+          "name": "git_check_observations_provider_check",
+          "value": "\"git_check_observations\".\"provider\" in ('github', 'gitlab')"
+        },
+        "git_check_observations_identity_check": {
+          "name": "git_check_observations_identity_check",
+          "value": "\"git_check_observations\".\"repository_id\" between 1 and 9007199254740991 and \"git_check_observations\".\"attempt_id\" between 1 and 9007199254740991 and \"git_check_observations\".\"head_sha\" ~ '^(?:[0-9a-f]{40}|[0-9a-f]{64})$'"
+        },
+        "git_check_observations_status_check": {
+          "name": "git_check_observations_status_check",
+          "value": "(\"git_check_observations\".\"provider\" = 'github' and \"git_check_observations\".\"status\" in ('requested', 'queued', 'in_progress', 'pending', 'waiting', 'completed') and \"git_check_observations\".\"job_total\" is null and \"git_check_observations\".\"job_failed\" is null and ((\"git_check_observations\".\"status\" = 'completed') = (\"git_check_observations\".\"conclusion\" is not null))) or\n          (\"git_check_observations\".\"provider\" = 'gitlab' and \"git_check_observations\".\"status\" in ('created', 'waiting_for_resource', 'preparing', 'pending', 'running', 'success', 'failed', 'canceled', 'skipped') and \"git_check_observations\".\"conclusion\" is null)"
+        },
+        "git_check_observations_times_check": {
+          "name": "git_check_observations_times_check",
+          "value": "\"git_check_observations\".\"observed_at_ms\" between 0 and 9007199254740991 and (\"git_check_observations\".\"completed_at_ms\" is null or \"git_check_observations\".\"completed_at_ms\" between 0 and 9007199254740991) and (\"git_check_observations\".\"job_total\" is null or \"git_check_observations\".\"job_total\" between 0 and 9007199254740991) and (\"git_check_observations\".\"job_failed\" is null or \"git_check_observations\".\"job_failed\" between 0 and \"git_check_observations\".\"job_total\")"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.git_repository_mappings": {
+      "name": "git_repository_mappings",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "receiver_id": {
+          "name": "receiver_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "integration_id": {
+          "name": "integration_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repository_id": {
+          "name": "repository_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "installation_id": {
+          "name": "installation_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mapping_author_user_id": {
+          "name": "mapping_author_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "git_repository_mappings_github_identity_unique": {
+          "name": "git_repository_mappings_github_identity_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "installation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repository_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"git_repository_mappings\".\"provider\" = 'github'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_repository_mappings_gitlab_identity_unique": {
+          "name": "git_repository_mappings_gitlab_identity_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repository_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"git_repository_mappings\".\"provider\" = 'gitlab'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_repository_mappings_github_global_unique": {
+          "name": "git_repository_mappings_github_global_unique",
+          "columns": [
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "installation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repository_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"git_repository_mappings\".\"provider\" = 'github'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_repository_mappings_gitlab_global_unique": {
+          "name": "git_repository_mappings_gitlab_global_unique",
+          "columns": [
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repository_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"git_repository_mappings\".\"provider\" = 'gitlab'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "git_repository_mappings_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk": {
+          "name": "git_repository_mappings_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk",
+          "tableFrom": "git_repository_mappings",
+          "tableTo": "git_webhook_receivers",
+          "columnsFrom": [
+            "organization_id",
+            "receiver_id",
+            "provider"
+          ],
+          "columnsTo": [
+            "organization_id",
+            "id",
+            "provider"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "git_repository_mappings_organization_id_id_pk": {
+          "name": "git_repository_mappings_organization_id_id_pk",
+          "columns": [
+            "organization_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_repository_mappings_tenant_isolation": {
+          "name": "git_repository_mappings_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_repository_mappings_provider_check": {
+          "name": "git_repository_mappings_provider_check",
+          "value": "(\"git_repository_mappings\".\"provider\" = 'github' and \"git_repository_mappings\".\"installation_id\" is not null and \"git_repository_mappings\".\"installation_id\" > 0) or (\"git_repository_mappings\".\"provider\" = 'gitlab' and \"git_repository_mappings\".\"installation_id\" is null)"
+        },
+        "git_repository_mappings_repository_id_check": {
+          "name": "git_repository_mappings_repository_id_check",
+          "value": "\"git_repository_mappings\".\"repository_id\" between 1 and 9007199254740991"
+        },
+        "git_repository_mappings_installation_id_check": {
+          "name": "git_repository_mappings_installation_id_check",
+          "value": "\"git_repository_mappings\".\"installation_id\" is null or \"git_repository_mappings\".\"installation_id\" between 1 and 9007199254740991"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.git_webhook_deliveries": {
+      "name": "git_webhook_deliveries",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "receiver_id": {
+          "name": "receiver_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receiver_revision": {
+          "name": "receiver_revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "digest": {
+          "name": "digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "admission_sequence": {
+          "name": "admission_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "work": {
+          "name": "work",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "git_webhook_deliveries_receipt_owner_unique": {
+          "name": "git_webhook_deliveries_receipt_owner_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_webhook_deliveries_github_digest_unique": {
+          "name": "git_webhook_deliveries_github_digest_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "digest",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"git_webhook_deliveries\".\"provider\" = 'github'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_webhook_deliveries_request_predecessors_index": {
+          "name": "git_webhook_deliveries_request_predecessors_index",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"work\" -> 'fact' ->> 'requestNumber')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "git_webhook_deliveries_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk": {
+          "name": "git_webhook_deliveries_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk",
+          "tableFrom": "git_webhook_deliveries",
+          "tableTo": "git_webhook_receivers",
+          "columnsFrom": [
+            "organization_id",
+            "receiver_id",
+            "provider"
+          ],
+          "columnsTo": [
+            "organization_id",
+            "id",
+            "provider"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "git_webhook_deliveries_organization_id_id_pk": {
+          "name": "git_webhook_deliveries_organization_id_id_pk",
+          "columns": [
+            "organization_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_webhook_deliveries_tenant_isolation": {
+          "name": "git_webhook_deliveries_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_webhook_deliveries_provider_check": {
+          "name": "git_webhook_deliveries_provider_check",
+          "value": "\"git_webhook_deliveries\".\"provider\" in ('github', 'gitlab')"
+        },
+        "git_webhook_deliveries_receiver_revision_check": {
+          "name": "git_webhook_deliveries_receiver_revision_check",
+          "value": "\"git_webhook_deliveries\".\"receiver_revision\" is null or \"git_webhook_deliveries\".\"receiver_revision\" between 1 and 9007199254740991"
+        },
+        "git_webhook_deliveries_digest_check": {
+          "name": "git_webhook_deliveries_digest_check",
+          "value": "\"git_webhook_deliveries\".\"digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "git_webhook_deliveries_work_check": {
+          "name": "git_webhook_deliveries_work_check",
+          "value": "\"git_webhook_deliveries\".\"work\" is null or jsonb_typeof(\"git_webhook_deliveries\".\"work\") = 'object'"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.git_webhook_delivery_ids": {
+      "name": "git_webhook_delivery_ids",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receiver_id": {
+          "name": "receiver_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delivery_id": {
+          "name": "delivery_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receipt_id": {
+          "name": "receipt_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "git_webhook_delivery_ids_organization_id_receiver_id_provider_receipt_id_git_webhook_deliveries_organization_id_receiver_id_provider_id_fk": {
+          "name": "git_webhook_delivery_ids_organization_id_receiver_id_provider_receipt_id_git_webhook_deliveries_organization_id_receiver_id_provider_id_fk",
+          "tableFrom": "git_webhook_delivery_ids",
+          "tableTo": "git_webhook_deliveries",
+          "columnsFrom": [
+            "organization_id",
+            "receiver_id",
+            "provider",
+            "receipt_id"
+          ],
+          "columnsTo": [
+            "organization_id",
+            "receiver_id",
+            "provider",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "git_webhook_delivery_ids_organization_id_receiver_id_provider_delivery_id_pk": {
+          "name": "git_webhook_delivery_ids_organization_id_receiver_id_provider_delivery_id_pk",
+          "columns": [
+            "organization_id",
+            "receiver_id",
+            "provider",
+            "delivery_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_webhook_delivery_ids_tenant_isolation": {
+          "name": "git_webhook_delivery_ids_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_webhook_delivery_ids_provider_check": {
+          "name": "git_webhook_delivery_ids_provider_check",
+          "value": "\"git_webhook_delivery_ids\".\"provider\" in ('github', 'gitlab')"
+        },
+        "git_webhook_delivery_ids_length_check": {
+          "name": "git_webhook_delivery_ids_length_check",
+          "value": "length(\"git_webhook_delivery_ids\".\"delivery_id\") between 1 and 255"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.git_webhook_receivers": {
+      "name": "git_webhook_receivers",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "git_webhook_receivers_global_id_unique": {
+          "name": "git_webhook_receivers_global_id_unique",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_webhook_receivers_tenant_id_provider_unique": {
+          "name": "git_webhook_receivers_tenant_id_provider_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "git_webhook_receivers_organization_id_id_pk": {
+          "name": "git_webhook_receivers_organization_id_id_pk",
+          "columns": [
+            "organization_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_webhook_receivers_tenant_isolation": {
+          "name": "git_webhook_receivers_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_webhook_receivers_provider_check": {
+          "name": "git_webhook_receivers_provider_check",
+          "value": "\"git_webhook_receivers\".\"provider\" in ('github', 'gitlab')"
+        },
+        "git_webhook_receivers_revision_check": {
+          "name": "git_webhook_receivers_revision_check",
+          "value": "\"git_webhook_receivers\".\"revision\" between 1 and 9007199254740991"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.git_dispatch_claims": {
+      "name": "git_dispatch_claims",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "delivery_id": {
+          "name": "delivery_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_key": {
+          "name": "task_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "disposition": {
+          "name": "disposition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "list_id": {
+          "name": "list_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "git_dispatch_claims_delivery_task_unique": {
+          "name": "git_dispatch_claims_delivery_task_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "git_dispatch_claims_organization_id_delivery_id_git_webhook_deliveries_organization_id_id_fk": {
+          "name": "git_dispatch_claims_organization_id_delivery_id_git_webhook_deliveries_organization_id_id_fk",
+          "tableFrom": "git_dispatch_claims",
+          "tableTo": "git_webhook_deliveries",
+          "columnsFrom": [
+            "organization_id",
+            "delivery_id"
+          ],
+          "columnsTo": [
+            "organization_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "git_dispatch_claims_organization_id_id_pk": {
+          "name": "git_dispatch_claims_organization_id_id_pk",
+          "columns": [
+            "organization_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_dispatch_claims_tenant_isolation": {
+          "name": "git_dispatch_claims_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_dispatch_claims_task_key_check": {
+          "name": "git_dispatch_claims_task_key_check",
+          "value": "\"git_dispatch_claims\".\"task_key\" ~ '^[A-Z]{2,5}-[1-9][0-9]{0,8}$'"
+        },
+        "git_dispatch_claims_result_check": {
+          "name": "git_dispatch_claims_result_check",
+          "value": "(\"git_dispatch_claims\".\"status\" = 'completed' and \"git_dispatch_claims\".\"disposition\" is not null and \"git_dispatch_claims\".\"disposition\" in ('applied','no_op') and \"git_dispatch_claims\".\"task_id\" is not null and \"git_dispatch_claims\".\"list_id\" is not null and \"git_dispatch_claims\".\"space_id\" is not null) or (\"git_dispatch_claims\".\"status\" in ('pending','closed') and \"git_dispatch_claims\".\"disposition\" is null and \"git_dispatch_claims\".\"task_id\" is null and \"git_dispatch_claims\".\"list_id\" is null and \"git_dispatch_claims\".\"space_id\" is null)"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.git_links": {
+      "name": "git_links",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "receiver_id": {
+          "name": "receiver_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_key": {
+          "name": "task_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "identity_hash": {
+          "name": "identity_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "identity": {
+          "name": "identity",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "head_first_observed_at_ms": {
+          "name": "head_first_observed_at_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "head_last_observed_at_ms": {
+          "name": "head_last_observed_at_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "checks_attempt_id": {
+          "name": "checks_attempt_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "checks_completed_at_ms": {
+          "name": "checks_completed_at_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "checks": {
+          "name": "checks",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lifecycle_observed_at_ms": {
+          "name": "lifecycle_observed_at_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lifecycle_admission_sequence": {
+          "name": "lifecycle_admission_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "head_admission_sequence": {
+          "name": "head_admission_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "draft": {
+          "name": "draft",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "url": {
+          "name": "url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "repository": {
+          "name": "repository",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_branch": {
+          "name": "source_branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "author": {
+          "name": "author",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "review_requested": {
+          "name": "review_requested",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "additions": {
+          "name": "additions",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deletions": {
+          "name": "deletions",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "link_source": {
+          "name": "link_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "member_observed_at_ms": {
+          "name": "member_observed_at_ms",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "member_admission_sequence": {
+          "name": "member_admission_sequence",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "reconciliation_pending_since": {
+          "name": "reconciliation_pending_since",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reconciliation_reported_at": {
+          "name": "reconciliation_reported_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "git_links_identity_unique": {
+          "name": "git_links_identity_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "identity_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_links_tenant_task_index": {
+          "name": "git_links_tenant_task_index",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_links_tenant_task_key_index": {
+          "name": "git_links_tenant_task_key_index",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_links_task_page_index": {
+          "name": "git_links_task_page_index",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_links_head_lookup_index": {
+          "name": "git_links_head_lookup_index",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "head_sha",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"git_links\".\"head_sha\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_links_reconciliation_index": {
+          "name": "git_links_reconciliation_index",
+          "columns": [
+            {
+              "expression": "reconciliation_pending_since",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"git_links\".\"reconciliation_pending_since\" is not null and \"git_links\".\"reconciliation_reported_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "git_links_request_lookup_index": {
+          "name": "git_links_request_lookup_index",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "receiver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "identity_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "git_links_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk": {
+          "name": "git_links_organization_id_receiver_id_provider_git_webhook_receivers_organization_id_id_provider_fk",
+          "tableFrom": "git_links",
+          "tableTo": "git_webhook_receivers",
+          "columnsFrom": [
+            "organization_id",
+            "receiver_id",
+            "provider"
+          ],
+          "columnsTo": [
+            "organization_id",
+            "id",
+            "provider"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "git_links_organization_id_id_pk": {
+          "name": "git_links_organization_id_id_pk",
+          "columns": [
+            "organization_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_links_tenant_isolation": {
+          "name": "git_links_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_links_provider_check": {
+          "name": "git_links_provider_check",
+          "value": "\"git_links\".\"provider\" in ('github', 'gitlab')"
+        },
+        "git_links_task_key_check": {
+          "name": "git_links_task_key_check",
+          "value": "\"git_links\".\"task_key\" ~ '^[A-Z]{2,5}-[1-9][0-9]{0,8}$'"
+        },
+        "git_links_identity_hash_check": {
+          "name": "git_links_identity_hash_check",
+          "value": "\"git_links\".\"identity_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "git_links_identity_check": {
+          "name": "git_links_identity_check",
+          "value": "jsonb_typeof(\"git_links\".\"identity\") = 'object'"
+        },
+        "git_links_head_check": {
+          "name": "git_links_head_check",
+          "value": "(\"git_links\".\"head_sha\" is null and \"git_links\".\"head_first_observed_at_ms\" is null and \"git_links\".\"head_last_observed_at_ms\" is null) or\n          (\"git_links\".\"head_sha\" is not null and \"git_links\".\"head_first_observed_at_ms\" is not null and \"git_links\".\"head_last_observed_at_ms\" is not null and \"git_links\".\"head_sha\" ~ '^(?:[0-9a-f]{40}|[0-9a-f]{64})$' and \"git_links\".\"head_first_observed_at_ms\" between 0 and 9007199254740991 and \"git_links\".\"head_last_observed_at_ms\" between \"git_links\".\"head_first_observed_at_ms\" and 9007199254740991)"
+        },
+        "git_links_checks_completed_check": {
+          "name": "git_links_checks_completed_check",
+          "value": "\"git_links\".\"checks_completed_at_ms\" is null or \"git_links\".\"checks_completed_at_ms\" between 0 and 9007199254740991"
+        },
+        "git_links_aggregate_check": {
+          "name": "git_links_aggregate_check",
+          "value": "\"git_links\".\"checks\" is null or (\"git_links\".\"head_sha\" is not null and jsonb_typeof(\"git_links\".\"checks\") = 'object')"
+        },
+        "git_links_lifecycle_observed_check": {
+          "name": "git_links_lifecycle_observed_check",
+          "value": "\"git_links\".\"lifecycle_observed_at_ms\" is null or \"git_links\".\"lifecycle_observed_at_ms\" between 0 and 9007199254740991"
+        },
+        "git_links_line_counts_check": {
+          "name": "git_links_line_counts_check",
+          "value": "(\"git_links\".\"additions\" is null or \"git_links\".\"additions\" between 0 and 9007199254740991) and (\"git_links\".\"deletions\" is null or \"git_links\".\"deletions\" between 0 and 9007199254740991)"
+        },
+        "git_links_link_source_check": {
+          "name": "git_links_link_source_check",
+          "value": "\"git_links\".\"link_source\" is null or \"git_links\".\"link_source\" in ('branch', 'title', 'description', 'commit')"
+        },
+        "git_links_members_check": {
+          "name": "git_links_members_check",
+          "value": "jsonb_typeof(\"git_links\".\"member_observed_at_ms\") = 'object' and (\"git_links\".\"repository\" is null or jsonb_typeof(\"git_links\".\"repository\") = 'object') and (\"git_links\".\"author\" is null or jsonb_typeof(\"git_links\".\"author\") = 'object')"
+        },
+        "git_links_status_check": {
+          "name": "git_links_status_check",
+          "value": "\"git_links\".\"status\" in ('created', 'open', 'merged', 'closed')"
+        },
+        "git_links_version_check": {
+          "name": "git_links_version_check",
+          "value": "\"git_links\".\"version\" between 1 and 9007199254740991"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.git_purged_tasks": {
+      "name": "git_purged_tasks",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_key": {
+          "name": "task_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "git_purged_tasks_organization_id_task_key_pk": {
+          "name": "git_purged_tasks_organization_id_task_key_pk",
+          "columns": [
+            "organization_id",
+            "task_key"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_purged_tasks_tenant_isolation": {
+          "name": "git_purged_tasks_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_purged_tasks_key_check": {
+          "name": "git_purged_tasks_key_check",
+          "value": "\"git_purged_tasks\".\"task_key\" ~ '^[A-Z]{2,5}-[1-9][0-9]{0,8}$'"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.git_merge_intents": {
+      "name": "git_merge_intents",
+      "schema": "",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "link_id": {
+          "name": "link_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delivery_id": {
+          "name": "delivery_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "command_key": {
+          "name": "command_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_key": {
+          "name": "task_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mapping": {
+          "name": "mapping",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_status": {
+          "name": "target_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "disposition": {
+          "name": "disposition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "recoveries": {
+          "name": "recoveries",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "window_started_at": {
+          "name": "window_started_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "reported_at": {
+          "name": "reported_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "git_merge_intents_pending_index": {
+          "name": "git_merge_intents_pending_index",
+          "columns": [
+            {
+              "expression": "window_started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"git_merge_intents\".\"status\" = 'pending' and \"git_merge_intents\".\"reported_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "git_merge_intents_organization_id_link_id_git_links_organization_id_id_fk": {
+          "name": "git_merge_intents_organization_id_link_id_git_links_organization_id_id_fk",
+          "tableFrom": "git_merge_intents",
+          "tableTo": "git_links",
+          "columnsFrom": [
+            "organization_id",
+            "link_id"
+          ],
+          "columnsTo": [
+            "organization_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "git_merge_intents_organization_id_link_id_pk": {
+          "name": "git_merge_intents_organization_id_link_id_pk",
+          "columns": [
+            "organization_id",
+            "link_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "git_merge_intents_tenant_isolation": {
+          "name": "git_merge_intents_tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "git_merge_intents_task_key_check": {
+          "name": "git_merge_intents_task_key_check",
+          "value": "\"git_merge_intents\".\"task_key\" ~ '^[A-Z]{2,5}-[1-9][0-9]{0,8}$'"
+        },
+        "git_merge_intents_command_key_check": {
+          "name": "git_merge_intents_command_key_check",
+          "value": "length(\"git_merge_intents\".\"command_key\") between 1 and 255 and jsonb_typeof(\"git_merge_intents\".\"mapping\") = 'object'"
+        },
+        "git_merge_intents_result_check": {
+          "name": "git_merge_intents_result_check",
+          "value": "(\"git_merge_intents\".\"status\" = 'pending' and \"git_merge_intents\".\"disposition\" is null and \"git_merge_intents\".\"reason\" is null and \"git_merge_intents\".\"target_status\" = 'done') or\n          (\"git_merge_intents\".\"status\" = 'handled' and (\"git_merge_intents\".\"disposition\" is null) <> (\"git_merge_intents\".\"reason\" is null) and (\"git_merge_intents\".\"disposition\" is null or \"git_merge_intents\".\"disposition\" in ('applied', 'no_op')))"
+        },
+        "git_merge_intents_attempts_check": {
+          "name": "git_merge_intents_attempts_check",
+          "value": "\"git_merge_intents\".\"attempts\" between 0 and 1000000"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.idempotency_keys": {
+      "name": "idempotency_keys",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_fingerprint": {
+          "name": "request_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "response_status": {
+          "name": "response_status",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "response_headers": {
+          "name": "response_headers",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "response_body": {
+          "name": "response_body",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idempotency_keys_expires_at_index": {
+          "name": "idempotency_keys_expires_at_index",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "idempotency_keys_organization_key_unique": {
+          "name": "idempotency_keys_organization_key_unique",
+          "nullsNotDistinct": true,
+          "columns": [
+            "organization_id",
+            "key"
+          ]
+        }
+      },
+      "policies": {
+        "idempotency_keys_organization_isolation": {
+          "name": "idempotency_keys_organization_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.event_versions": {
+      "name": "event_versions",
+      "schema": "",
+      "columns": {
+        "consumer": {
+          "name": "consumer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "aggregate_key": {
+          "name": "aggregate_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "event_versions_aggregate_unique": {
+          "name": "event_versions_aggregate_unique",
+          "nullsNotDistinct": true,
+          "columns": [
+            "consumer",
+            "organization_id",
+            "aggregate_key"
+          ]
+        }
+      },
+      "policies": {
+        "event_versions_organization_isolation": {
+          "name": "event_versions_organization_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.outbox_events": {
+      "name": "outbox_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "event_name": {
+          "name": "event_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stream": {
+          "name": "stream",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "traceparent": {
+          "name": "traceparent",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "sent_at": {
+          "name": "sent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "outbox_events_pending_index": {
+          "name": "outbox_events_pending_index",
+          "columns": [
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"outbox_events\".\"status\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "outbox_events_sent_at_index": {
+          "name": "outbox_events_sent_at_index",
+          "columns": [
+            {
+              "expression": "sent_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"outbox_events\".\"status\" = 'sent'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "outbox_events_lease_expiry_index": {
+          "name": "outbox_events_lease_expiry_index",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"outbox_events\".\"status\" = 'leased'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "outbox_events_organization_isolation": {
+          "name": "outbox_events_organization_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'",
+          "withCheck": "organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on'"
+        }
+      },
+      "checkConstraints": {
+        "outbox_events_status_check": {
+          "name": "outbox_events_status_check",
+          "value": "\"outbox_events\".\"status\" in ('pending', 'leased', 'sent', 'failed')"
+        },
+        "outbox_events_lease_check": {
+          "name": "outbox_events_lease_check",
+          "value": "(\"outbox_events\".\"status\" = 'leased' and \"outbox_events\".\"lease_token\" is not null and \"outbox_events\".\"lease_expires_at\" is not null)\n        or (\"outbox_events\".\"status\" <> 'leased' and \"outbox_events\".\"lease_token\" is null and \"outbox_events\".\"lease_expires_at\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.processed_events": {
+      "name": "processed_events",
+      "schema": "",
+      "columns": {
+        "consumer": {
+          "name": "consumer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "processed_at": {
+          "name": "processed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "processed_events_processed_at_index": {
+          "name": "processed_events_processed_at_index",
+          "columns": [
+            {
+              "expression": "processed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "processed_events_pkey": {
+          "name": "processed_events_pkey",
+          "columns": [
+            "consumer",
+            "event_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {
+    "public.git_webhook_admission_sequence": {
+      "name": "git_webhook_admission_sequence",
+      "schema": "public",
+      "increment": "1",
+      "startWith": "1",
+      "minValue": "1",
+      "maxValue": "9223372036854775807",
+      "cache": "1",
+      "cycle": false
+    }
+  },
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

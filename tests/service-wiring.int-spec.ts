@@ -26,8 +26,16 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule, createIntegrationApplication } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
-import { GIT_LINK_DISPATCH_QUEUE } from '../src/config/job-queues.js';
+import { ListTaskGitLinksInternalResponse } from '@cadenway/contracts/validators/internal/integration-service';
+
+import {
+  GIT_HEAD_CHECKS_QUEUE,
+  GIT_LINK_DISPATCH_QUEUE,
+  GIT_LINK_DISPATCH_V2_QUEUE,
+  GIT_LINK_MAINTENANCE_QUEUE,
+} from '../src/config/job-queues.js';
 import { DispatchGitDelivery } from '../src/modules/git-webhooks/application/use-cases/commands/dispatch/dispatch-git-delivery/dispatch-git-delivery.use-case.js';
+import { GitDispatchJobsProducer } from '../src/modules/git-webhooks/infrastructure/jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
 // does not export its container fixtures yet and a service never depends on `testcontainers` itself,
@@ -42,6 +50,11 @@ const composeFile: string = fileURLToPath(new URL('../compose.dev.yaml', import.
 const project = `cadenway-integration-service-test-${String(process.pid)}`;
 const legacyOutboxId = randomUUID();
 const legacyOutboxTenantId = randomUUID();
+/** A request link recorded by the release before the Git link projection, closed on its head. */
+const legacyLinkTenantId = '01938f6e-0000-7000-8000-0000000000a1';
+const legacyLinkReceiverId = '01938f6e-0000-7000-8000-0000000000a2';
+const legacyLinkTaskId = '01938f6e-0000-7000-8000-0000000000a3';
+const legacyHeadObservedAtMs = Date.UTC(2026, 10, 7, 15, 0);
 
 /**
  * Host port of NATS. Fixed for the run, unlike the ephemeral port of PostgreSQL: the service must
@@ -83,8 +96,10 @@ const platformTables = [
   'processed_events',
 ] as const;
 const gitTables = [
+  'git_check_observations',
   'git_dispatch_claims',
   'git_links',
+  'git_merge_intents',
   'git_purged_tasks',
   'git_repository_mappings',
   'git_webhook_deliveries',
@@ -236,6 +251,38 @@ async function prepareLegacyOutbox(pool: pg.Pool): Promise<void> {
         );
       }),
     );
+    await runWithOrganizationContext(memberOf(legacyLinkTenantId), () =>
+      new TenantTransactionRunner(pool).run(async ({ client }) => {
+        await client.query(
+          "insert into git_webhook_receivers (organization_id, id, provider) values ($1, $2, 'github')",
+          [legacyLinkTenantId, legacyLinkReceiverId],
+        );
+        await client.query(
+          `insert into git_links
+             (organization_id, receiver_id, provider, task_id, task_key, identity_hash, identity,
+              status, version, head_sha, head_first_observed_at_ms, head_last_observed_at_ms,
+              checks_attempt_id, checks_completed_at_ms)
+           values ($1, $2, 'github', $3, 'CAD-497', $4, $5::jsonb, 'closed', 3, $6, $7, $7, 11, $8)`,
+          [
+            legacyLinkTenantId,
+            legacyLinkReceiverId,
+            legacyLinkTaskId,
+            'a'.repeat(64),
+            JSON.stringify({
+              organizationId: legacyLinkTenantId,
+              receiverId: legacyLinkReceiverId,
+              binding: { provider: 'github', repositoryId: 91, installationId: 51 },
+              taskId: legacyLinkTaskId,
+              kind: 'pull-request',
+              requestNumber: 31,
+            }),
+            'b'.repeat(40),
+            legacyHeadObservedAtMs,
+            legacyHeadObservedAtMs + 60_000,
+          ],
+        );
+      }),
+    );
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -271,6 +318,7 @@ class WiringProbeController {
 
 describe('integration-service wiring', () => {
   const gateway = keyPair();
+  const automation = keyPair();
   const integration = keyPair();
   const taskCommands: {
     path: string | undefined;
@@ -393,7 +441,10 @@ describe('integration-service wiring', () => {
     );
     vi.stubEnv(
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
-      JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
+      JSON.stringify({
+        'api-gateway': [gateway.publicJwk],
+        'automation-service': [automation.publicJwk],
+      }),
     );
 
     @Module({
@@ -465,7 +516,7 @@ describe('integration-service wiring', () => {
         tableowner: 'integration_migrator',
       })),
     );
-    expect(journal.rows).toEqual([{ applied: 8 }]);
+    expect(journal.rows).toEqual([{ applied: 9 }]);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -474,7 +525,84 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 8 }]);
+    expect(journal.rows).toEqual([{ applied: 9 }]);
+  });
+
+  it('drains link receipts of the previous release from the previous link queue', async () => {
+    const tenant = service().get(TenantTransactionRunner);
+    const mapping = {
+      binding: { provider: 'github', repositoryId: 81, installationId: 41 },
+      integrationId: gitIntegrationId,
+      spaceId: gitSpaceId,
+      mappingAuthorUserId: camilleMartinId,
+    };
+    const receipt = (fact: Record<string, unknown>, digest: string) =>
+      runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+        tenant.run(async (scope) => {
+          // The previous release recorded links without the merge intent marker.
+          const inserted = await scope.client.query(
+            `insert into git_webhook_deliveries
+               (organization_id, receiver_id, provider, receiver_revision, digest, work)
+             values ($1, $2, 'github', 1, $3, $4::jsonb) returning id`,
+            [
+              gitOrganizationId,
+              gitReceiverId,
+              digest.repeat(64),
+              JSON.stringify({ mapping, fact, recordLink: true }),
+            ],
+          );
+          const id = (inserted.rows[0] as { readonly id: string }).id;
+          await service()
+            .get(GitDispatchJobsProducer)
+            .enqueue(scope, id, 'CAD-498', { recordLink: true });
+          const queued = await scope.client.query(
+            "select name from pgboss.job where data->'payload'->>'deliveryId' = $1",
+            [id],
+          );
+          expect(queued.rows).toEqual([{ name: GIT_LINK_DISPATCH_QUEUE.name }]);
+          return id;
+        }),
+      );
+    const request = {
+      kind: 'actionable',
+      requestNumber: 231,
+      taskKeys: ['CAD-498'],
+      closingTaskKeys: ['CAD-498'],
+    };
+    await receipt({ ...request, trigger: 'pr_open', closingTaskKeys: [] }, '1');
+    const path = '/internal/v1/tasks/CAD-498/git-status-actions';
+    await vi.waitFor(
+      () => {
+        expect(taskCommands.filter((command) => command.path === path)).toHaveLength(1);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    const merge = await receipt({ ...request, trigger: 'pr_merged' }, '2');
+    await vi.waitFor(
+      async () => {
+        const intent = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+          tenant.run(({ client }) =>
+            client.query(
+              "select status, disposition from git_merge_intents where task_key = 'CAD-498'",
+            ),
+          ),
+        );
+        expect(intent.rows).toEqual([{ status: 'handled', disposition: 'applied' }]);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    // The previous format keeps its direct done status under the claim key, without an intent job.
+    const commands = taskCommands.filter((command) => command.path === path);
+    expect(commands.map(({ body }) => (body as { readonly status: unknown }).status)).toEqual([
+      'review',
+      'done',
+    ]);
+    const claim = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
+      tenant.run(({ client }) =>
+        client.query('select id from git_dispatch_claims where delivery_id = $1', [merge]),
+      ),
+    );
+    expect(commands[1]?.key).toBe((claim.rows[0] as { readonly id: string }).id);
   });
 
   it('retains a signed closure admitted before the earlier opening can record the link', async () => {
@@ -598,7 +726,7 @@ describe('integration-service wiring', () => {
     );
   });
 
-  it('resumes a signed check once its preceding opening is settled', async () => {
+  it('announces a check stored while its opening waited once the opening settles', async () => {
     const taskKey = 'CAD-488';
     const path = `/internal/v1/tasks/${taskKey}/git-status-actions`;
     const tenant = service().get(TenantTransactionRunner);
@@ -682,7 +810,7 @@ describe('integration-service wiring', () => {
       );
       await send(checkBody, checkId, 'check_suite').expect(204);
       const admitted = await query(
-        `select d.id, d.work->'prerequisiteIds' as prerequisites,
+        `select d.work,
                 (select receipt_id from git_webhook_delivery_ids
                   where organization_id = $1 and receiver_id = $2 and delivery_id = $3) as opening
            from git_webhook_deliveries d join git_webhook_delivery_ids a
@@ -690,45 +818,19 @@ describe('integration-service wiring', () => {
           where a.organization_id = $1 and a.receiver_id = $2 and a.delivery_id = $4`,
         [gitOrganizationId, gitReceiverId, openingId, checkId],
       );
-      const row = admitted.rows[0] as
-        { id: string; opening: string; prerequisites: readonly string[] } | undefined;
-      expect(row?.prerequisites).toEqual([row?.opening]);
+      const row = admitted.rows[0] as { work: unknown; opening: string } | undefined;
       if (row === undefined) throw new Error('The signed check was not admitted.');
-      await vi.waitFor(
-        () => {
-          const deferred = enqueue.mock.calls.filter(
-            ([, queue, payload, options]) =>
-              queue === GIT_LINK_DISPATCH_QUEUE.name &&
-              typeof payload === 'object' &&
-              payload !== null &&
-              'deliveryId' in payload &&
-              payload.deliveryId === row.id &&
-              options?.startAfter instanceof Date,
-          );
-          expect(deferred).not.toHaveLength(0);
-        },
-        { timeout: 12_000, interval: 50 },
-      );
-      await vi.waitFor(
-        async () => {
-          const deferredJob = await migrator.query(
-            `select id from pgboss.job
-              where name = $1 and data->>'organizationId' = $2
-                and data->'payload'->>'deliveryId' = $3 and data->'payload'->>'taskKey' = $4
-                and start_after > created_on`,
-            [GIT_LINK_DISPATCH_QUEUE.name, gitOrganizationId, row.id, taskKey],
-          );
-          expect(deferredJob.rows.length).toBeGreaterThan(0);
-        },
-        { timeout: 3_000, interval: 50 },
-      );
-      expect(
-        taskCommands.filter(({ path: commandPath, body }) =>
-          commandPath === path && typeof body === 'object' && body !== null && 'status' in body
-            ? body.status === null
-            : false,
-        ),
-      ).toEqual([]);
+      // The check admits no work of its own: its observation is stored and the links on its
+      // head are refreshed in pages, while the opening is still waiting for Task.
+      expect(row.work).toBeNull();
+      const refresh = () =>
+        migrator.query(
+          `select state from pgboss.job
+            where name = $1 and data->>'organizationId' = $2
+              and data->'payload'->>'headSha' = $3`,
+          [GIT_HEAD_CHECKS_QUEUE.name, gitOrganizationId, sha],
+        );
+      expect((await refresh()).rows).toHaveLength(1);
       expect((await events()).rows).toEqual([]);
 
       heldTaskReply = undefined;
@@ -742,18 +844,38 @@ describe('integration-service wiring', () => {
         async () => {
           expect((await events()).rows).toEqual([
             { event_name: 'git.pr-opened.v1', version: 1 },
-            { event_name: 'git.checks-completed.v1', version: 2 },
+            // The suite was stored before the opening created the link, which announces it.
+            { event_name: 'git.link-updated.v1', version: 2 },
           ]);
         },
         { timeout: 15_000, interval: 100 },
       );
       await send(checkBody, checkId, 'check_suite').expect(204);
+      // Whenever the refresh page ran, it changes nothing more once it completed.
+      await vi.waitFor(
+        async () => {
+          expect((await refresh()).rows).toEqual([{ state: 'completed' }]);
+        },
+        { timeout: 15_000, interval: 100 },
+      );
+      await vi.waitFor(
+        async () => {
+          const pending = await migrator.query(
+            `select count(*)::int as count from pgboss.job
+              where name = $1 and data->>'organizationId' = $2
+                and data->'payload'->>'taskKey' = $3 and state not in ('completed', 'failed')`,
+            [GIT_LINK_DISPATCH_V2_QUEUE.name, gitOrganizationId, taskKey],
+          );
+          expect(pending.rows).toEqual([{ count: 0 }]);
+        },
+        { timeout: 15_000, interval: 100 },
+      );
       expect((await events()).rows).toEqual([
         { event_name: 'git.pr-opened.v1', version: 1 },
-        { event_name: 'git.checks-completed.v1', version: 2 },
+        { event_name: 'git.link-updated.v1', version: 2 },
       ]);
-      const commands = taskCommands.filter(({ path: commandPath }) => commandPath === path);
-      const reviewKeys = commands
+      const reviewKeys = taskCommands
+        .filter(({ path: commandPath }) => commandPath === path)
         .filter(
           ({ body }) =>
             typeof body === 'object' &&
@@ -763,12 +885,6 @@ describe('integration-service wiring', () => {
         )
         .map(({ key }) => key);
       expect(new Set(reviewKeys).size).toBe(1);
-      expect(
-        commands.filter(
-          ({ body }) =>
-            typeof body === 'object' && body !== null && 'status' in body && body.status === null,
-        ),
-      ).toHaveLength(1);
     } finally {
       heldTaskReply = undefined;
       release();
@@ -851,19 +967,22 @@ describe('integration-service wiring', () => {
       },
       { timeout: 15_000, interval: 50 },
     );
-    for (const [taskKey, status] of [
-      ['CAD-486', null],
-      ['CAD-487', 'done'],
-    ] as const) {
-      expect(
-        taskCommands
-          .filter(({ path }) => path === `/internal/v1/tasks/${taskKey}/git-status-actions`)
-          .map(({ body }) => body),
-      ).toEqual([
-        expect.objectContaining({ status: 'review' }),
-        expect.objectContaining({ status }),
-      ]);
-    }
+    // The merge only authorizes each link; the merge intent of CAD-487 then submits done.
+    await vi.waitFor(
+      () => {
+        for (const [taskKey, statuses] of [
+          ['CAD-486', ['review', null]],
+          ['CAD-487', ['review', null, 'done']],
+        ] as const) {
+          expect(
+            taskCommands
+              .filter(({ path }) => path === `/internal/v1/tasks/${taskKey}/git-status-actions`)
+              .map(({ body }) => body),
+          ).toEqual(statuses.map((status) => expect.objectContaining({ status }) as unknown));
+        }
+      },
+      { timeout: 15_000, interval: 50 },
+    );
   });
 
   it('accepts one pending Git action for two signed deliveries of the same raw body', async () => {
@@ -873,7 +992,7 @@ describe('integration-service wiring', () => {
       organizationId: null,
     });
     const repository = { id: 81 };
-    const sha = 'a'.repeat(40);
+    const sha = 'e'.repeat(40);
     const branch = 'cad-482-ecran-connexion-sso';
     const payload = {
       repository,
@@ -948,11 +1067,12 @@ describe('integration-service wiring', () => {
         const links = await runWithOrganizationContext(memberOf(gitOrganizationId), () =>
           tenant.run((transaction) =>
             transaction.client.query(
-              `select link.task_key, link.status, link.version::int, event.event_name, event.payload
+              `select link.task_key, link.status, (event.payload->>'version')::int as version,
+                      event.event_name, event.payload
                  from git_links link join outbox_events event
                    on event.organization_id = link.organization_id
                    and event.payload->>'gitLinkId' = link.id::text
-                 where link.task_key = 'CAD-482'`,
+                 where link.task_key = 'CAD-482' and event.event_name = 'git.pr-opened.v1'`,
             ),
           ),
         );
@@ -1110,7 +1230,7 @@ describe('integration-service wiring', () => {
     const interrupted = vi
       .spyOn(producer, 'enqueue')
       .mockImplementationOnce(async (transaction, queue, payload, options) => {
-        expect(queue).toBe(GIT_LINK_DISPATCH_QUEUE.name);
+        expect(queue).toBe(GIT_LINK_DISPATCH_V2_QUEUE.name);
         const result = await enqueue(transaction, queue, payload, options);
         const stored = await transaction.client.query(
           'select id from pgboss.job where name = $1 and id = $2',
@@ -1147,7 +1267,7 @@ describe('integration-service wiring', () => {
       );
     expect((await receiptCounts()).rows).toEqual([{ receipts: 0, aliases: 0 }]);
     const leftover = await migrator.query('select id from pgboss.job where name = $1 and id = $2', [
-      GIT_LINK_DISPATCH_QUEUE.name,
+      GIT_LINK_DISPATCH_V2_QUEUE.name,
       firstJobId,
     ]);
     expect(leftover.rows).toEqual([]);
@@ -1254,6 +1374,135 @@ describe('integration-service wiring', () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ reached: true });
+  });
+
+  it('completes the Git link projection migration on links recorded before it', async () => {
+    const indexes = await migrator.query<{ relname: string; valid: boolean }>(
+      `select c.relname, i.indisvalid as valid from pg_index i join pg_class c on c.oid = i.indexrelid
+        where c.relname in ('git_links_task_page_index', 'git_links_head_lookup_index',
+                            'git_links_reconciliation_index')
+        order by c.relname`,
+    );
+    expect(indexes.rows).toEqual([
+      { relname: 'git_links_head_lookup_index', valid: true },
+      { relname: 'git_links_reconciliation_index', valid: true },
+      { relname: 'git_links_task_page_index', valid: true },
+    ]);
+    const unvalidated = await migrator.query(
+      `select conname from pg_constraint
+        where conrelid = 'public.git_links'::regclass and not convalidated`,
+    );
+    expect(unvalidated.rows).toEqual([]);
+
+    const tenant = service().get(TenantTransactionRunner);
+    const stored = await runWithOrganizationContext(memberOf(legacyLinkTenantId), () =>
+      tenant.run(({ client }) =>
+        client.query(
+          `select lifecycle_observed_at_ms::double precision as lifecycle, member_observed_at_ms,
+                  checks, checks_completed_at_ms::double precision as completed
+             from git_links where task_key = 'CAD-497'`,
+        ),
+      ),
+    );
+    expect(stored.rows).toEqual([
+      {
+        lifecycle: legacyHeadObservedAtMs,
+        member_observed_at_ms: {},
+        checks: null,
+        completed: legacyHeadObservedAtMs + 60_000,
+      },
+    ]);
+    const token = await signer.sign('integration-service', {
+      actor: { type: 'user', id: camilleMartinId },
+      organizationId: legacyLinkTenantId,
+    });
+    const response = await request(service().getHttpServer())
+      .get('/internal/v1/tasks/CAD-497/git-links')
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    const page = ListTaskGitLinksInternalResponse.parse(response.body);
+    expect(page).toMatchObject({
+      items: [
+        {
+          taskKey: 'CAD-497',
+          kind: 'pull-request',
+          state: 'closed',
+          number: 31,
+          providerRepositoryId: 91,
+          headSha: 'b'.repeat(40),
+          // A completion the previous release recorded is returned, without an aggregate.
+          checksCompletedAt: new Date(legacyHeadObservedAtMs + 60_000).toISOString(),
+          version: 3,
+        },
+      ],
+      nextCursor: null,
+    });
+    expect(page.items[0]).not.toHaveProperty('checks');
+  });
+
+  it('guards the task Git link read with the issuer, actor and organization of the contract', async () => {
+    const read = (token?: string) => {
+      const call = request(service().getHttpServer()).get('/internal/v1/tasks/CAD-497/git-links');
+      return token === undefined ? call : call.set('Authorization', `Bearer ${token}`);
+    };
+    const automationSigner = await InternalTokenSigner.create({
+      issuer: 'automation-service',
+      privateJwk: automation.privateJwk,
+    });
+    const cases = [
+      [undefined, 401, 'auth.token-missing'],
+      [
+        await automationSigner.sign('integration-service', {
+          actor: { type: 'user', id: camilleMartinId },
+          organizationId: legacyLinkTenantId,
+        }),
+        403,
+        'auth.issuer-not-allowed',
+      ],
+      [
+        await signer.sign('integration-service', {
+          actor: { type: 'system', id: 'api-gateway' },
+          organizationId: legacyLinkTenantId,
+        }),
+        403,
+        'auth.actor-not-allowed',
+      ],
+      [
+        await signer.sign('integration-service', {
+          actor: { type: 'user', id: camilleMartinId },
+          organizationId: null,
+        }),
+        403,
+        'auth.organization-required',
+      ],
+    ] as const;
+    for (const [token, status, code] of cases) {
+      const response = await read(token);
+      expect({ status: response.status, code: (response.body as { code?: string }).code }).toEqual({
+        status,
+        code,
+      });
+    }
+    // Another organization reads no link of CAD-497.
+    const other = await read(
+      await signer.sign('integration-service', {
+        actor: { type: 'user', id: camilleMartinId },
+        organizationId: atelierNordId,
+      }),
+    );
+    expect(other.status).toBe(200);
+    expect(other.body).toEqual({ items: [], nextCursor: null });
+  });
+
+  it('runs the merge intent worker and schedules the link maintenance', async () => {
+    const schedules = await migrator.query(
+      'select name, cron, timezone from pgboss.schedule where name = $1',
+      [GIT_LINK_MAINTENANCE_QUEUE.name],
+    );
+    expect(schedules.rows).toEqual([
+      { name: GIT_LINK_MAINTENANCE_QUEUE.name, cron: '17 * * * *', timezone: 'UTC' },
+    ]);
   });
 
   it('refuses a token signed for another service', async () => {
@@ -1382,7 +1631,7 @@ describe('integration-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 8 }]);
+    expect(journal.rows).toEqual([{ applied: 9 }]);
   });
 
   it('publishes successive outbox events and remains ready', async () => {

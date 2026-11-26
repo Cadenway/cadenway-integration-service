@@ -7,11 +7,21 @@ export interface GitDispatchClaim {
   /** Tenant of the receiver and of the outbound Task command. */
   readonly organizationId: string;
 
+  /** Admitted delivery receipt the claim settles, and its admission order (0 when unrecorded). */
+  readonly deliveryId: string;
+  readonly admissionSequence: number;
+
   /** Stable Task command key, reused for every retry of this delivery and task. */
   readonly commandKey: string;
   readonly taskKey: string;
   readonly receiverRevision: number;
   readonly mapping: GitDeliveryMapping;
   readonly fact: Extract<VerifiedGitDelivery, { readonly kind: 'actionable' }>;
+
+  /**
+   * Whether the receipt records a merge status as the link's merge intent. A status-only receipt,
+   * and a receipt admitted by an earlier release, sends the merge status with its dispatch.
+   */
+  readonly mergeIntent: boolean;
   // #endregion
 }

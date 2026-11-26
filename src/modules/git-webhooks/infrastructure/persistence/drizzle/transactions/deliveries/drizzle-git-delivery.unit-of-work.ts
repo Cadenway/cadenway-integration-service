@@ -4,8 +4,11 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { GitDeliveryMapping } from '../../../../../application/models/deliveries/git-delivery-mapping.model.js';
 import type { GitRepositoryIdentity } from '../../../../../application/models/deliveries/git-repository-identity.model.js';
 import type { GitDeliveryTransaction } from '../../../../../application/ports/outbound/transactions/deliveries/git-delivery-transaction.port.js';
+import type { GitHeadChecksJobsProducer } from '../../../../jobs/pg-boss/checks/git-head-checks.adapter.js';
 import type { GitDispatchJobsProducer } from '../../../../jobs/pg-boss/dispatch/git-dispatch.adapter.js';
 import { DrizzleGitRequestPredecessorsRepository } from '../../repositories/deliveries/drizzle-git-request-predecessors.repository.js';
+import type { GitCheckObservation } from '../../../../../domain/value-objects/checks/git-check-observation.value-object.js';
+import type { DrizzleGitCheckObservationRepository } from '../../repositories/checks/drizzle-git-check-observation.repository.js';
 import type { DrizzleGitLinkRepository } from '../../repositories/links/drizzle-git-link.repository.js';
 import { gitRepositoryMappings } from '../../schemas/deliveries/git-repository-mappings.schema.js';
 import {
@@ -28,10 +31,31 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     private readonly receiverRevision: number | null = null,
     private readonly jobs?: Pick<GitDispatchJobsProducer, 'enqueue'>,
     private readonly links?: Pick<DrizzleGitLinkRepository, 'findRequestTaskKeys'>,
+    private readonly observations?: Pick<DrizzleGitCheckObservationRepository, 'record'>,
+    private readonly headChecks?: Pick<GitHeadChecksJobsProducer, 'enqueue'>,
   ) {}
   // #endregion
 
   // #region Methods
+  /** Keeps the observation for the mapped repository even before any link exists. */
+  public async recordCheckObservation(
+    binding: GitRepositoryIdentity,
+    observation: GitCheckObservation,
+  ): Promise<void> {
+    if (this.links === undefined || this.observations === undefined) return;
+    if (binding.provider !== this.provider) return;
+    await this.observations.record(
+      this.scope,
+      {
+        organizationId: this.organizationId,
+        receiverId: this.receiverId,
+        provider: this.provider,
+        repositoryId: binding.repositoryId,
+      },
+      observation,
+    );
+  }
+
   /** Reads and locks the current mapping for the authenticated provider identity. */
   public async findMapping(identity: GitRepositoryIdentity): Promise<GitDeliveryMapping | null> {
     if (identity.provider !== this.provider) return null;
@@ -73,6 +97,33 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
       { organizationId: this.organizationId, receiverId: this.receiverId, binding, requestNumber },
       headSha,
     );
+  }
+
+  /** Queues the first page of each refresh; disabled link producers refresh nothing. */
+  public async scheduleHeadRefresh(
+    input: Parameters<GitDeliveryTransaction['scheduleHeadRefresh']>[0],
+  ): Promise<void> {
+    if (this.links === undefined || this.headChecks === undefined) return;
+    if (input.binding.provider !== this.provider) return;
+    const first = {
+      organizationId: this.organizationId,
+      receiverId: this.receiverId,
+      binding: input.binding,
+      headSha: input.observation.headSha,
+      attemptId: input.observation.attemptId,
+      observedAtMs: input.observation.observedAtMs,
+      source: input.digest,
+      page: 0,
+      after: null,
+    };
+    await this.headChecks.enqueue(this.scope, { ...first, target: { kind: 'head' } });
+    const state = input.request?.state;
+    if (input.request !== null && state !== undefined) {
+      await this.headChecks.enqueue(this.scope, {
+        ...first,
+        target: { kind: 'request', requestNumber: input.request.number, requestState: state },
+      });
+    }
   }
 
   /** Finds accepted dependent work under the same receiver and mapping as the new observation. */
@@ -140,11 +191,53 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     return duplicate === undefined ? 'new' : 'duplicate';
   }
 
+  /**
+   * Records the receipt of one head refresh page, without a provider delivery ID, and its
+   * dispatch jobs, unless the page was recorded already.
+   */
+  public async admitRefresh(input: {
+    readonly digest: string;
+    readonly work: NonNullable<typeof gitWebhookDeliveries.$inferSelect.work>;
+  }): Promise<'recorded' | 'existing'> {
+    const existing = await this.scope.db
+      .select({ id: gitWebhookDeliveries.id })
+      .from(gitWebhookDeliveries)
+      .where(
+        and(
+          eq(gitWebhookDeliveries.organizationId, this.organizationId),
+          eq(gitWebhookDeliveries.receiverId, this.receiverId),
+          eq(gitWebhookDeliveries.digest, input.digest),
+        ),
+      )
+      .limit(1);
+    if (existing.length !== 0) return 'existing';
+    const work = { ...input.work, recordLink: true as const, mergeIntent: true as const };
+    const [receipt] = await this.scope.db
+      .insert(gitWebhookDeliveries)
+      .values({
+        organizationId: this.organizationId,
+        receiverId: this.receiverId,
+        provider: this.provider,
+        receiverRevision: this.receiverRevision,
+        digest: input.digest,
+        admissionSequence: sql`nextval('git_webhook_admission_sequence')`,
+        work,
+      })
+      .returning({ id: gitWebhookDeliveries.id });
+    if (receipt === undefined) throw new Error('The head refresh page was not recorded.');
+    if (this.jobs !== undefined) {
+      for (const taskKey of work.fact.taskKeys) {
+        await this.jobs.enqueue(this.scope, receipt.id, taskKey, work);
+      }
+    }
+    return 'recorded';
+  }
+
   /** Records a first receipt, its delivery ID and accepted work under the receiver lock. */
   public async admit(input: Parameters<GitDeliveryTransaction['admit']>[0]): Promise<'accepted'> {
     const work: typeof gitWebhookDeliveries.$inferSelect.work =
       input.work !== null && this.links !== undefined
-        ? { ...input.work, recordLink: true as const }
+        ? { ...input.work, recordLink: true as const, mergeIntent: true as const }
         : input.work;
     const [receipt] = await this.scope.db
       .insert(gitWebhookDeliveries)
@@ -154,6 +247,8 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
         provider: this.provider,
         receiverRevision: this.receiverRevision,
         digest: input.digest,
+        // Drawn under the receiver lock, so it follows the admission order of the receiver.
+        admissionSequence: sql`nextval('git_webhook_admission_sequence')`,
         work,
       })
       .returning({ id: gitWebhookDeliveries.id });
@@ -167,7 +262,7 @@ export class DrizzleGitDeliveryTransaction implements GitDeliveryTransaction {
     });
     if (work !== null && this.jobs !== undefined) {
       for (const taskKey of work.fact.taskKeys) {
-        await this.jobs.enqueue(this.scope, receipt.id, taskKey, work.recordLink === true);
+        await this.jobs.enqueue(this.scope, receipt.id, taskKey, work);
       }
     }
     return 'accepted';

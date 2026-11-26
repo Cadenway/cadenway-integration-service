@@ -17,7 +17,7 @@ paths:
   direct NATS client.
 - Handlers deduplicate on the event id and call a use case; they never write another service's data.
 - A shape change is a new version; the old one keeps being emitted until every consumer moved.
-- Events emitted by this service: `git.branch-created`, `git.pr-opened`, `git.pr-merged`, `git.pr-closed`, `git.checks-completed`.
+- Events emitted by this service: `git.branch-created`, `git.pr-opened`, `git.pr-merged`, `git.pr-closed`, `git.pr-reopened`, `git.checks-completed`, `git.link-updated`.
 
 ## Review example
 

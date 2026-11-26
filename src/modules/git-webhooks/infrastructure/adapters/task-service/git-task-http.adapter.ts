@@ -11,6 +11,8 @@ import { randomUUID } from 'node:crypto';
 
 import type { GitDispatchClaim } from '../../../application/models/dispatch/git-dispatch-claim.model.js';
 import type { GitTaskActionResult } from '../../../application/models/dispatch/git-task-action-result.model.js';
+import type { GitMergeIntentCommand } from '../../../application/models/merges/git-merge-intent-command.model.js';
+import type { GitMergeIntentOutcome } from '../../../application/models/merges/git-merge-intent-outcome.model.js';
 import type { GitTaskAction } from '../../../application/ports/outbound/actions/dispatch/git-task-action.port.js';
 import { getTaskServiceInternalRoutes } from './generated/task-service.js';
 
@@ -64,9 +66,38 @@ export class GitTaskHttpAdapter implements GitTaskAction {
     }
   }
 
+  /**
+   * Submits the merge's `done` status under the intent's command key. Task confirms with a
+   * receipt, also on a replay. `task.not-found`, `task.trashed`, a reused key and an invalid
+   * request are definitive refusals; anything else, including a timeout, a transport error,
+   * `409` or `503`, is a failure to retry under the same key.
+   */
+  public async submitMergeIntent(command: GitMergeIntentCommand): Promise<GitMergeIntentOutcome> {
+    try {
+      const { receipt } = await this.send(command, command.status, {
+        key: command.commandKey,
+        idempotent: true,
+      });
+      return { kind: 'confirmed', disposition: receipt.disposition };
+    } catch (error) {
+      if (error instanceof ProblemException) {
+        const { status, code } = error.problem;
+        if (
+          code === 'task.trashed' ||
+          (status === 404 && code === 'task.not-found') ||
+          (status === 422 && code === 'idempotency.key-reused') ||
+          (status === 400 && code === 'request.invalid')
+        ) {
+          return { kind: 'refused', reason: code };
+        }
+      }
+      return { kind: 'failed' };
+    }
+  }
+
   /** Sends the signed Git action and validates the private receipt and its replay metadata. */
   private async send(
-    claim: GitDispatchClaim,
+    claim: Pick<GitDispatchClaim, 'organizationId' | 'taskKey' | 'mapping'>,
     status: GitTaskStatus,
     request: { readonly key: string; readonly idempotent: boolean },
   ): Promise<{ readonly receipt: AuthorizedGitTaskActionResult; readonly replayed: boolean }> {

@@ -119,7 +119,7 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
       scope,
       input.deliveryId,
       input.taskKey,
-      work.recordLink === true,
+      work,
       decision.startAfter,
     );
     return 'deferred';
@@ -294,11 +294,14 @@ export class DrizzleGitDispatchUnitOfWork implements GitDispatchUnitOfWork {
       throw new Error('Invalid Git dispatch snapshot.');
     return {
       organizationId: row.organizationId,
+      deliveryId: row.deliveryId,
+      admissionSequence: delivery.admissionSequence ?? 0,
       commandKey: row.id,
       taskKey: row.taskKey,
       receiverRevision: delivery.receiverRevision,
       mapping: delivery.work.mapping,
       fact: delivery.work.fact,
+      mergeIntent: delivery.work.recordLink === true && delivery.work.mergeIntent === true,
     };
   }
   // #endregion

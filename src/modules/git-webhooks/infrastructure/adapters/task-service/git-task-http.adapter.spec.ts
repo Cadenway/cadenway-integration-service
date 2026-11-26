@@ -18,6 +18,8 @@ const integrationId = '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e03';
 const mappingAuthorUserId = '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e04';
 const claim: GitDispatchClaim = {
   organizationId,
+  deliveryId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e08',
+  admissionSequence: 1,
   commandKey: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e05',
   taskKey: 'CAD-482',
   receiverRevision: 1,
@@ -34,6 +36,7 @@ const claim: GitDispatchClaim = {
     taskKeys: ['CAD-482'],
     closingTaskKeys: [],
   },
+  mergeIntent: true,
 };
 
 const receipt = {
@@ -345,5 +348,64 @@ describe('GitTaskHttpAdapter', () => {
         expect(new Set(calls.map((call) => call.body)).size).toBe(1);
       },
     );
+  });
+
+  describe('merge intent submission', () => {
+    const command = {
+      organizationId,
+      linkId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e09',
+      attempt: 2,
+      commandKey: claim.commandKey,
+      taskKey: 'CAD-482',
+      mapping: claim.mapping,
+      status: 'done',
+    } as const;
+
+    it('sends done under the intent key and confirms a replayed receipt', async () => {
+      await withTaskServer(
+        signer,
+        () => replayed,
+        async (adapter, calls) => {
+          await expect(adapter.submitMergeIntent(command)).resolves.toEqual({
+            kind: 'confirmed',
+            disposition: 'applied',
+          });
+          expect(calls).toHaveLength(1);
+          expect(calls[0]?.headers['idempotency-key']).toBe(command.commandKey);
+          expect(JSON.parse(calls[0]?.body ?? '')).toMatchObject({ status: 'done' });
+        },
+      );
+    });
+
+    it.each([
+      [404, 'task.not-found'],
+      [422, 'idempotency.key-reused'],
+      [409, 'task.trashed'],
+    ])('records the definitive %s %s refusal with its reason', async (status, code) => {
+      await withTaskServer(
+        signer,
+        () => taskProblem(status, code),
+        async (adapter) => {
+          await expect(adapter.submitMergeIntent(command)).resolves.toEqual({
+            kind: 'refused',
+            reason: code,
+          });
+        },
+      );
+    });
+
+    it.each([
+      [503, 'task.action-unavailable'],
+      [409, 'idempotency.request-in-progress'],
+      [404, 'http.not-found'],
+    ])('treats %s %s as a failure to retry under the same key', async (status, code) => {
+      await withTaskServer(
+        signer,
+        () => taskProblem(status, code),
+        async (adapter) => {
+          await expect(adapter.submitMergeIntent(command)).resolves.toEqual({ kind: 'failed' });
+        },
+      );
+    });
   });
 });

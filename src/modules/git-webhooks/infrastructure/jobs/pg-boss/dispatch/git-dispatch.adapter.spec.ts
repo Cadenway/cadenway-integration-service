@@ -17,7 +17,7 @@ describe('GitDispatchJobsProducer', () => {
     const scope: JobsTransaction = { organizationId, client: { query: vi.fn() } };
     const producer = new GitDispatchJobsProducer({ enqueue });
 
-    await producer.enqueue(scope, receiptId, 'CAD-482');
+    await producer.enqueue(scope, receiptId, 'CAD-482', null);
 
     expect(enqueue.mock.calls[0]?.[0]).toBe(scope);
     expect(enqueue).toHaveBeenCalledExactlyOnceWith(
@@ -33,28 +33,40 @@ describe('GitDispatchJobsProducer', () => {
     const producer = new GitDispatchJobsProducer({ enqueue });
 
     await expect(
-      producer.enqueue({ organizationId: null, client: { query: vi.fn() } }, receiptId, 'CAD-482'),
+      producer.enqueue(
+        { organizationId: null, client: { query: vi.fn() } },
+        receiptId,
+        'CAD-482',
+        null,
+      ),
     ).rejects.toThrow('tenant transaction');
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('queues link-only work separately from the queue consumed by older workers', async () => {
-    const enqueue = vi.fn<JobProducer['enqueue']>().mockResolvedValue({
-      jobId: 'job-id',
-      duplicate: false,
-    });
-    const scope: JobsTransaction = { organizationId, client: { query: vi.fn() } };
-    const producer = new GitDispatchJobsProducer({ enqueue });
+  it.each([
+    [{ recordLink: true } as const, 'integration.dispatch-git-link'],
+    [{ recordLink: true, mergeIntent: true } as const, 'integration.dispatch-git-link.v2'],
+    [{ mergeIntent: true } as const, 'integration.dispatch-git-action'],
+  ])(
+    'queues a receipt of format %j where workers that understand it consume it',
+    async (format, queue) => {
+      const enqueue = vi.fn<JobProducer['enqueue']>().mockResolvedValue({
+        jobId: 'job-id',
+        duplicate: false,
+      });
+      const scope: JobsTransaction = { organizationId, client: { query: vi.fn() } };
+      const producer = new GitDispatchJobsProducer({ enqueue });
 
-    await producer.enqueue(scope, receiptId, 'CAD-482', true);
+      await producer.enqueue(scope, receiptId, 'CAD-482', format);
 
-    expect(enqueue).toHaveBeenCalledExactlyOnceWith(
-      scope,
-      'integration.dispatch-git-link',
-      { deliveryId: receiptId, taskKey: 'CAD-482' },
-      { occurrenceKey: `${receiptId}:CAD-482` },
-    );
-  });
+      expect(enqueue).toHaveBeenCalledExactlyOnceWith(
+        scope,
+        queue,
+        { deliveryId: receiptId, taskKey: 'CAD-482' },
+        { occurrenceKey: `${receiptId}:CAD-482` },
+      );
+    },
+  );
 
   it('resolves the published producer token through Nest', async () => {
     const enqueue = vi.fn<JobProducer['enqueue']>().mockResolvedValue({
@@ -67,7 +79,7 @@ describe('GitDispatchJobsProducer', () => {
     try {
       const producer = module.get(GitDispatchJobsProducer);
       const scope: JobsTransaction = { organizationId, client: { query: vi.fn() } };
-      await producer.enqueue(scope, receiptId, 'CAD-482');
+      await producer.enqueue(scope, receiptId, 'CAD-482', null);
       expect(enqueue).toHaveBeenCalledOnce();
     } finally {
       await module.close();

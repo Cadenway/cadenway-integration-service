@@ -1,17 +1,20 @@
 import { InvalidGitLinkError } from '../../errors/links/invalid-git-link.error.js';
-import type { GitLinkChanged } from '../../events/links/git-link-changed.event.js';
 import type { VerifiedGitDelivery } from '../../value-objects/deliveries/verified-git-delivery.value-object.js';
+import type { GitLinkDelivery } from '../../value-objects/links/git-link-delivery.value-object.js';
 import type { GitLinkIdentity } from '../../value-objects/links/git-link-identity.value-object.js';
-import type { GitLinkState } from '../../value-objects/links/git-link-state.value-object.js';
 
 type LinkScope = Pick<GitLinkIdentity, 'organizationId' | 'receiverId' | 'binding' | 'taskId'>;
-type LinkReference = Extract<VerifiedGitDelivery, { kind: 'actionable' }>;
+/** A delivery about one link; `head_checks` is first split into one `pr_checks` per link. */
+type LinkReference = Exclude<
+  Extract<VerifiedGitDelivery, { kind: 'actionable' }>,
+  { trigger: 'head_checks' }
+>;
 
-const outcomes = {
-  branch: { status: 'created', type: 'branch-created' },
-  pr_open: { status: 'open', type: 'pull-request-opened' },
-  pr_closed: { status: 'closed', type: 'pull-request-closed' },
-  pr_merged: { status: 'merged', type: 'pull-request-merged' },
+const triggerStates = {
+  pr_open: 'open',
+  pr_reopened: 'open',
+  pr_closed: 'closed',
+  pr_merged: 'merged',
 } as const;
 
 /**
@@ -37,61 +40,89 @@ export function gitLinkIdentity(scope: LinkScope, reference: LinkReference): Git
 }
 
 /**
- * Applies the Integration AsyncAPI link ordering rule. A verified merge supersedes a close
- * without merge. Replays and deliveries that would reverse either closure produce no fact
- * or version change. Head and check observations leave the lifecycle untouched and are
- * settled against the current link by the caller.
+ * Reads what a verified delivery contributes to the link of one task. A branch creation, an
+ * opening and a merge that cites the task can create the link; an inferred task only updates an
+ * existing one (MODULE.md invariants). Lifecycle actions carry their own state; an update, a
+ * GitLab merge request pipeline and the request snapshot report the request's current state,
+ * which realigns the link ("Reconciliation", Integration AsyncAPI).
  */
-export function decideGitLinkChange(
-  identity: GitLinkIdentity,
-  current: GitLinkState | null,
+export function gitLinkDeliveryOf(
   reference: LinkReference,
-): { readonly state: GitLinkState; readonly event: GitLinkChanged } | null {
-  if (!isSameLink(identity, gitLinkIdentity(identity, reference))) throw new InvalidGitLinkError();
-  if (reference.trigger === 'pr_head' || reference.trigger === 'pr_checks') return null;
-
-  const { status, type } = outcomes[reference.trigger];
-  if (current !== null) {
-    if (
-      !isSameLink(identity, current.identity) ||
-      (current.status === 'created') !== (identity.kind === 'branch') ||
-      !Number.isSafeInteger(current.version) ||
-      current.version < 1
-    ) {
-      throw new InvalidGitLinkError();
-    }
-    if (
-      current.status === status ||
-      current.status === 'merged' ||
-      (current.status === 'closed' && status === 'open')
-    ) {
-      return null;
-    }
-  }
-
-  const version = (current?.version ?? 0) + 1;
-  if (!Number.isSafeInteger(version)) throw new InvalidGitLinkError();
-  return { state: { identity, status, version }, event: { type, version } };
+  taskKey: string,
+  admissionSequence = 0,
+): GitLinkDelivery {
+  return { ...contribution(reference, taskKey), admissionSequence };
 }
 
-function isSameLink(first: GitLinkIdentity, second: GitLinkIdentity): boolean {
-  if (
-    first.organizationId !== second.organizationId ||
-    first.receiverId !== second.receiverId ||
-    first.taskId !== second.taskId ||
-    first.binding.repositoryId !== second.binding.repositoryId ||
-    first.binding.provider !== second.binding.provider
-  ) {
-    return false;
+function contribution(
+  reference: LinkReference,
+  taskKey: string,
+): Omit<GitLinkDelivery, 'admissionSequence'> {
+  const linkSource = reference.linkSources?.[taskKey] ?? null;
+  if (reference.trigger === 'branch') {
+    return {
+      kind: 'branch',
+      creates: true,
+      lifecycle: null,
+      verifiedMerge: false,
+      members: reference.members ?? {},
+      membersObservedAtMs: null,
+      head: null,
+      checksHeadSha: null,
+      legacyChecksCompletedAtMs: null,
+      linkSource,
+    };
   }
-  if (
-    first.binding.provider === 'github' &&
-    second.binding.provider === 'github' &&
-    first.binding.installationId !== second.binding.installationId
-  ) {
-    return false;
+  if (reference.trigger === 'pr_checks') {
+    return {
+      kind: 'pull-request',
+      creates: false,
+      lifecycle: reference.requestState ?? null,
+      verifiedMerge: false,
+      members: {},
+      membersObservedAtMs: null,
+      head: null,
+      checksHeadSha: reference.checks.headSha,
+      legacyChecksCompletedAtMs:
+        reference.checks.observed === true ? null : reference.checks.completedAtMs,
+      linkSource: null,
+    };
   }
-  return first.kind === 'branch'
-    ? second.kind === 'branch' && first.ref === second.ref
-    : second.kind === 'pull-request' && first.requestNumber === second.requestNumber;
+  if (reference.trigger === 'pr_head') {
+    return {
+      kind: 'pull-request',
+      creates: false,
+      lifecycle: null,
+      verifiedMerge: false,
+      members: {},
+      membersObservedAtMs: null,
+      head: reference.head,
+      checksHeadSha: null,
+      legacyChecksCompletedAtMs: null,
+      linkSource: null,
+    };
+  }
+
+  const snapshot = reference.request;
+  const observedAtMs = snapshot?.state.observedAtMs ?? reference.head?.observedAtMs ?? null;
+  const lifecycle =
+    reference.trigger === 'pr_updated'
+      ? (snapshot?.state ?? null)
+      : { state: triggerStates[reference.trigger], observedAtMs };
+  return {
+    kind: 'pull-request',
+    creates:
+      reference.trigger === 'pr_open' ||
+      (reference.trigger === 'pr_merged' &&
+        (reference.referencedTaskKeys === undefined ||
+          reference.referencedTaskKeys.includes(taskKey))),
+    lifecycle,
+    verifiedMerge: reference.trigger === 'pr_merged',
+    members: snapshot?.members ?? {},
+    membersObservedAtMs: snapshot?.state.observedAtMs ?? null,
+    head: reference.head ?? null,
+    checksHeadSha: null,
+    legacyChecksCompletedAtMs: null,
+    linkSource,
+  };
 }
